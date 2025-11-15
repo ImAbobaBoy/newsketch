@@ -7,94 +7,52 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="app" class="app">
-    <header class="topbar">
-      <div class="brand">
-        <svg width="28" height="28" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M2 3v6h2V5h4V3H2zm18 0h-6v2h4v4h2V3zM2 15v6h6v-2H4v-4H2zm20 0h-2v4h-4v2h6v-6z"/></svg>
-        <h1>SketchBoard</h1>
-      </div>
+    <div class="app">
+        <!-- Верхняя панель -->
+        <header class="topbar">
+            <div class="logo">StratSketch</div>
+            <div class="online">👥 <span id="usersCount">0</span></div>
+        </header>
 
-      <div class="top-controls">
-        <div class="users">Онлайн: <span id="usersCount">0</span></div>
-        <button id="backgroundBtn" class="btn ghost" title="Установить фон">Фон</button>
-        <button id="clearBtn" class="btn danger" title="Очистить холст">Очистить</button>
-      </div>
-    </header>
+        <!-- Левая панель инструментов -->
+        <aside class="tools">
+            <button class="tool" data-tool="brush">🖌</button>
+            <button class="tool" data-tool="line">📏</button>
+            <button class="tool" data-tool="rectangle">▭</button>
+            <button class="tool" data-tool="circle">◯</button>
+            <button class="tool" data-tool="diamond">◇</button>
+            <button class="tool" data-tool="eraser">🧽</button>
 
-    <main class="main">
-      <aside class="sidebar" aria-hidden="false">
-        <div class="tool-group">
-          <label class="label">Инструмент</label>
-          <select id="toolSelect" class="control">
-            <option value="brush">Кисть</option>
-            <option value="line">Линия</option>
-            <option value="rectangle">Прямоугольник</option>
-            <option value="circle">Круг</option>
-            <option value="eraser">Ластик</option>
-            <option value="diamond">Ромб</option>
-          </select>
-        </div>
+            <input type="color" id="colorPicker"/>
 
-        <div class="tool-row">
-          <label class="label">Цвет</label>
-          <input id="colorPicker" type="color" value="#ff6b6b" />
-        </div>
+            <label class="sizeLabel">
+                <input type="range" id="brushSize" min="1" max="50" value="3">
+            </label>
 
-        <div class="tool-row">
-          <label class="label">Размер <span id="sizeValue" class="muted">3</span></label>
-          <input id="brushSize" type="range" min="1" max="60" value="3" />
-        </div>
+            <button id="clearBtn" class="danger">🗑</button>
+            <button id="backgroundBtn">🖼</button>
+        </aside>
 
-        <div class="tool-row">
-          <label class="label">Zoom</label>
-          <div class="muted small">Пробел + колесо / pinch</div>
-        </div>
-
-      </aside>
-
-      <section class="canvas-area">
-        <div class="canvas-wrap" id="canvasWrap">
-          <canvas id="backgroundCanvas" class="layer"></canvas>
-          <canvas id="drawingsCanvas" class="layer"></canvas>
-          <canvas id="overlayCanvas" class="layer"></canvas>
-
-          <div id="loading" class="loading">Загрузка...</div>
-        </div>
-      </section>
-    </main>
-
-    <!-- Mobile bottom toolbar -->
-    <nav class="mobilebar" aria-hidden="true">
-      <select id="toolSelectMobile" class="mobile-select">
-        <option value="brush">Кисть</option>
-        <option value="line">Линия</option>
-        <option value="rectangle">Прямоугольник</option>
-        <option value="circle">Круг</option>
-        <option value="eraser">Ластик</option>
-        <option value="diamond">Ромб</option>
-      </select>
-
-      <input id="colorPickerMobile" type="color" value="#ff6b6b" />
-      <input id="brushSizeMobile" type="range" min="1" max="60" value="3" />
-    </nav>
-
-    <!-- Modal for background -->
-    <div id="backgroundModal" class="modal" role="dialog" aria-modal="true" aria-hidden="true">
-      <div class="modal-content">
-        <button class="modal-close" id="modalClose" aria-label="Закрыть">&times;</button>
-        <h2>Загрузить фон</h2>
-        <input id="backgroundInput" type="file" accept="image/*" />
-        <p class="muted">Или вставьте URL изображения (квадрат будет центрирован)</p>
-        <input id="backgroundUrl" type="text" placeholder="https://example.com/image.jpg" />
-        <div class="modal-actions">
-          <button id="loadBackgroundBtn" class="btn">Установить</button>
-        </div>
-      </div>
+        <!-- Сам холст -->
+        <main class="canvas-wrap">
+            <canvas id="drawingCanvas"></canvas>
+            <div id="loading" class="loading">Загрузка…</div>
+        </main>
     </div>
 
-  </div>
+    <!-- модалка -->
+    <div id="backgroundModal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <h2>Фон</h2>
+            <input type="file" id="backgroundInput" accept="image/*">
+            <input type="text" id="backgroundUrl" placeholder="https://example.com/img.png">
+            <button id="loadBackgroundBtn">Загрузить</button>
+        </div>
+    </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js" defer></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
 </body>
+
 </html>
