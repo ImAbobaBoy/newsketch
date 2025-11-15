@@ -1,130 +1,134 @@
-* {
-    box-sizing: border-box;
-    user-select: none;
+/* --- Base / reset --- */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; font-family: Inter, Arial, Helvetica, sans-serif; background: #f6f7f9; color:#111; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+a { color: inherit; text-decoration: none; }
+
+/* container */
+.container { display:flex; flex-direction:column; height:100vh; gap:8px; padding:12px; }
+
+/* header */
+.header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 18px rgba(20,20,20,0.06);
+}
+.header .logo { font-weight:700; font-size:16px; margin:0; }
+
+/* controls row */
+.controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.controls .tool-section, .controls .color-section, .controls .size-section, .controls .actions { display:flex; gap:8px; align-items:center; }
+
+/* main area */
+.main { flex:1; display:flex; gap:12px; align-items:stretch; }
+
+/* left / tools */
+.sidebar {
+  width: 84px;
+  background: #fff;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 6px 18px rgba(20,20,20,0.04);
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  align-items:center;
 }
 
-body {
-    margin: 0;
-    background: #111;
-    color: #eee;
-    font-family: Arial, sans-serif;
-    height: 100vh;
-    overflow: hidden;
+/* canvas container */
+.canvas-container {
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  position:relative;
+  background: #e9eef3;
+  border-radius: 10px;
+  padding: 12px;
+  overflow:hidden;
 }
 
-.app {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
+/* square wrapper */
+.canvas-square {
+  width:100%;
+  max-width:1100px;
+  aspect-ratio:1/1;
+  background:#fff;
+  border-radius:8px;
+  position:relative;
+  overflow:hidden;
+  box-shadow: 0 8px 24px rgba(20,20,20,0.06);
 }
 
-/* Верхняя панель */
-.topbar {
-    height: 50px;
-    background: #1c1c1c;
-    border-bottom: 1px solid #333;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 14px;
-    font-size: 18px;
+/* canvas layers */
+.canvas-square canvas {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none;
 }
 
-.logo {
-    font-weight: bold;
-}
-
-.tools {
-    width: 60px;
-    background: #1a1a1a;
-    border-right: 1px solid #333;
-    padding: 10px 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-}
-
-.tool {
-    width: 48px;
-    height: 48px;
-    background: #333;
-    color: white;
-    border: none;
-    border-radius: 12px;
-    font-size: 22px;
-}
-
-.tool:active,
-.tool.selected {
-    background: #555;
-}
-
-.tools input[type=color] {
-    width: 48px;
-    height: 48px;
-    border: none;
-    padding: 0;
-}
-
-.sizeLabel input {
-    width: 100%;
-}
-
-.danger {
-    background: #803333;
-}
-
-.canvas-wrap {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    position: relative;
-}
-
-canvas {
-    background: #000;
-    width: 90vmin;   /* квадрат, вписывающийся в экран */
-    height: 90vmin;  /* квадрат */
-    max-width: 100%;
-    max-height: 100%;
-}
-
+/* loading overlay */
 .loading {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+  position:absolute;
+  z-index:60;
+  left:12px; top:12px;
+  background: rgba(255,255,255,0.9);
+  padding:6px 10px;
+  border-radius:6px;
+  font-size:13px;
+  color:#222;
 }
 
-/* Мобилка: панель инструментов снизу */
-@media (max-width: 800px) {
-    .app {
-        flex-direction: column;
-    }
+/* modal */
+.modal { display:none; position:fixed; inset:0; align-items:center; justify-content:center; background: rgba(0,0,0,0.45); padding:12px; }
+.modal .modal-content { background:#fff; padding:14px; border-radius:8px; width:100%; max-width:420px; position:relative; }
+.modal .close { position:absolute; right:8px; top:8px; background:transparent; border:0; font-size:20px; }
 
-    .tools {
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        height: 70px;
-        flex-direction: row;
-        justify-content: center;
-        padding: 6px;
-        gap: 8px;
-        width: 100%;
-        border-right: none;
-        border-top: 1px solid #333;
-    }
-
-    .tool {
-        flex: 0 0 48px;
-    }
-
-    canvas {
-        width: 100vw;
-        height: 100vw;
-    }
+/* button styles */
+button, select, input[type="range"], input[type="color"] {
+  min-height:40px;
+  border-radius:8px;
+  border:1px solid rgba(0,0,0,0.06);
+  background:#fff;
+  padding:6px 8px;
 }
+button.danger { background:#ffecec; border-color:#ffcccc; }
+
+/* mobile bottom bar */
+.mobile-bar {
+  display:none;
+  position:fixed;
+  left:12px; right:12px; bottom:12px;
+  height:56px;
+  background:#fff;
+  border-radius:12px;
+  box-shadow:0 6px 18px rgba(20,20,20,0.08);
+  display:flex;
+  align-items:center;
+  justify-content:space-around;
+  gap:8px;
+  z-index:80;
+}
+
+/* responsive */
+@media (max-width:900px) {
+  .main { flex-direction:column; gap:6px; }
+  .sidebar { display:none; }
+  .controls { display:none; }
+  .canvas-container { padding:6px; }
+  .canvas-square {
+    width: calc(100vw - 24px);
+    height: calc(100vw - 24px);
+    max-width:none;
+  }
+  .mobile-bar { display:flex; }
+}
+
+/* small helpers */
+.hidden { display:none !important; }

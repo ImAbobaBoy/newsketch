@@ -1,14 +1,12 @@
-// script.js — Canvas Engine 2.0 optimized for 10-20 users
+// script.js — SketchApp v2: stable square canvases + improved sync + mobile UI
 (() => {
-  // Config
-  const SEND_INTERVAL_MS = 40;        // batching interval
-  const MAX_POINTS_PER_BATCH = 300;   // safety cap per batch
-  const MIN_CANVAS_WIDTH = 800;
-  const MIN_CANVAS_HEIGHT = 600;
+  const SEND_INTERVAL_MS = 60;         // чуть реже — меньше пакетов
+  const MAX_POINTS_PER_BATCH = 120;    // меньше, чем раньше
+  const MIN_CANVAS = 800;
 
   class SketchApp {
     constructor() {
-      // DOM
+      // canvases
       this.backgroundCanvas = document.getElementById('backgroundCanvas');
       this.drawingsCanvas   = document.getElementById('drawingsCanvas');
       this.overlayCanvas    = document.getElementById('overlayCanvas');
@@ -20,17 +18,19 @@
       this.colorPicker = document.getElementById('colorPicker');
       this.brushSizeInput = document.getElementById('brushSize');
       this.sizeValue = document.getElementById('sizeValue');
-      // mobile duplications
-      this.toolSelectMobile = document.getElementById('toolSelectMobile');
-      this.colorPickerMobile = document.getElementById('colorPickerMobile');
-      this.brushSizeMobile = document.getElementById('brushSizeMobile');
+      this.undoBtn = document.getElementById('undoBtn');
 
-      // modal
+      // modal elements
       this.bgModal = document.getElementById('backgroundModal');
       this.bgInput = document.getElementById('backgroundInput');
       this.bgUrl   = document.getElementById('backgroundUrl');
       this.loadBgBtn = document.getElementById('loadBackgroundBtn');
       this.modalClose = document.getElementById('modalClose');
+      this.cancelBgBtn = document.getElementById('cancelBgBtn');
+
+      // mobile inputs
+      this.colorPickerMobile = document.getElementById('colorPickerMobile');
+      this.brushSizeMobile = document.getElementById('brushSizeMobile');
 
       // socket
       this.socket = io();
@@ -47,48 +47,37 @@
       this.brushSize = 3;
       this.isDrawing = false;
       this.currentLineId = null;
-      this.overlayStart = null;
-      this.overlayCur = null;
-      this.backgroundImage = null; // Image object
-      this.drawings = new Map(); // id -> { id, tool, points, color, width }
+      this.backgroundImage = null;
+      this.drawings = new Map();    // id -> { id, tool, color, width, points:[] }
+      this.pointsBuffer = {};       // id -> [point,...]
+      this.createdLinesOrder = [];  // for undo
+      this.lineSeq = 0;             // sequence per client
 
-      // outgoing buffer: id -> [points]
-      this.pointsBuffer = {};
-
-      // bind and init
       this.bindUI();
       this.setupSocket();
       this.adjustCanvases();
-      window.addEventListener('resize', this.debounce(() => this.adjustCanvases(), 150));
+
+      window.addEventListener('resize', this.debounce(() => this.adjustCanvases(), 120));
       this.startSender();
-      requestAnimationFrame(()=>this.renderLoop());
+      requestAnimationFrame(() => this.renderLoop());
     }
 
+    /////////////////////////////////////////////
+    // UI
+    /////////////////////////////////////////////
     bindUI() {
-      // desktop controls
-      this.toolSelect.addEventListener('change', e => this.setTool(e.target.value));
-      this.colorPicker.addEventListener('change', e => this.setColor(e.target.value));
-      this.brushSizeInput.addEventListener('input', e => { this.setBrushSize(+e.target.value); });
+      if (this.toolSelect) this.toolSelect.addEventListener('change', e => this.setTool(e.target.value));
+      if (this.colorPicker) this.colorPicker.addEventListener('change', e => this.setColor(e.target.value));
+      if (this.brushSizeInput) this.brushSizeInput.addEventListener('input', e => this.setBrushSize(+e.target.value));
+      if (this.undoBtn) this.undoBtn.addEventListener('click', () => this.undoLast());
 
-      // mobile controls sync
-      if (this.toolSelectMobile) {
-        this.toolSelectMobile.addEventListener('change', e => {
-          this.toolSelect.value = e.target.value;
-          this.setTool(e.target.value);
-        });
-      }
-      if (this.colorPickerMobile) {
-        this.colorPickerMobile.addEventListener('change', e => {
-          this.colorPicker.value = e.target.value;
-          this.setColor(e.target.value);
-        });
-      }
-      if (this.brushSizeMobile) {
-        this.brushSizeMobile.addEventListener('input', e => {
-          this.brushSizeInput.value = e.target.value;
-          this.setBrushSize(+e.target.value);
-        });
-      }
+      // mobile controls
+      if (this.colorPickerMobile) this.colorPickerMobile.addEventListener('change', e => {
+        this.colorPicker.value = e.target.value; this.setColor(e.target.value);
+      });
+      if (this.brushSizeMobile) this.brushSizeMobile.addEventListener('input', e => {
+        this.brushSizeInput.value = e.target.value; this.setBrushSize(+e.target.value);
+      });
 
       // top buttons
       document.getElementById('backgroundBtn').addEventListener('click', () => this.openModal());
@@ -96,213 +85,242 @@
         if (confirm('Очистить холст?')) {
           this.socket.emit('clearCanvas');
           this.drawings.clear();
+          this.createdLinesOrder = [];
           this.clearCanvas(this.drawingsCanvas);
         }
       });
 
-      // modal
       this.modalClose.addEventListener('click', () => this.closeModal());
+      this.cancelBgBtn.addEventListener('click', () => this.closeModal());
       this.loadBgBtn.addEventListener('click', () => this.uploadBackground());
-      // file input change handled in uploadBackground
+
+      // sidebar/tool buttons
+      document.querySelectorAll('.tool, .mtool').forEach(btn => {
+        btn.addEventListener('click', e => {
+          const t = e.currentTarget.dataset.tool;
+          if (!t) return;
+          this.setTool(t);
+          if (this.toolSelect) this.toolSelect.value = t;
+        });
+      });
 
       // pointer events on overlay
       const overlay = this.overlayCanvas;
-      overlay.style.touchAction = 'none';
-      overlay.addEventListener('pointerdown', e => {
+      overlay.style.touchAction = "none";
+      overlay.addEventListener("pointerdown", e => {
         overlay.setPointerCapture(e.pointerId);
         const pos = this.getCanvasPos(e);
         this.onPointerDown(pos);
       });
-      overlay.addEventListener('pointermove', e => {
+      overlay.addEventListener("pointermove", e => {
         const pos = this.getCanvasPos(e);
         this.onPointerMove(pos);
       });
-      overlay.addEventListener('pointerup', e => {
+      overlay.addEventListener("pointerup", e => {
         overlay.releasePointerCapture(e.pointerId);
         this.onPointerUp();
       });
-      overlay.addEventListener('pointercancel', () => this.onPointerUp());
+      overlay.addEventListener("pointercancel", () => this.onPointerUp());
     }
 
-    setTool(t) { this.currentTool = t; this.toolSelect.value = t; if (this.toolSelectMobile) this.toolSelectMobile.value = t; }
-    setColor(c) { this.currentColor = c; this.colorPicker.value = c; if (this.colorPickerMobile) this.colorPickerMobile.value = c; }
-    setBrushSize(s) { this.brushSize = s; this.brushSizeInput.value = s; if (this.brushSizeMobile) this.brushSizeMobile.value = s; this.sizeValue.textContent = s; }
+    setTool(v){ this.currentTool = v; }
+    setColor(v){ this.currentColor = v; }
+    setBrushSize(v){ this.brushSize = v; this.sizeValue.textContent = v; }
 
-    // socket handlers
+    /////////////////////////////////////////////
+    // SOCKET
+    /////////////////////////////////////////////
     setupSocket() {
       this.socket.on('connect', () => console.log('socket connected', this.socket.id));
-      this.socket.on('initialState', state => this.loadState(state));
-      this.socket.on('usersUpdate', users => { document.getElementById('usersCount').textContent = (users||[]).length; });
-      this.socket.on('newLine', line => {
-        if (!this.drawings.has(line.id)) this.drawings.set(line.id, { ...line, points: line.points || [] });
+      this.socket.on('initialState', s => this.loadState(s));
+      this.socket.on('usersUpdate', users => {
+        document.getElementById('usersCount').textContent = (users && users.length) || 0;
       });
-      this.socket.on('pointsBatch', ({ id, points }) => {
-        const line = this.drawings.get(id);
-        if (line) {
-          // append and draw only new part
-          const startIndex = line.points.length;
-          line.points.push(...points);
-          this.drawSegmentBatch(line, startIndex, line.points.length);
-        } else {
-          // create and draw full
-          const newLine = { id, tool: 'brush', points: [...points], color: '#111', width: 2 };
-          this.drawings.set(id, newLine);
-          this.drawWholeLine(newLine);
+
+      // other client created line
+      this.socket.on('newLine', line => {
+        if (!line || !line.id) return;
+        if (!this.drawings.has(line.id)) {
+          this.drawings.set(line.id, { ...line, points: line.points || [] });
+          // don't draw full immediately — pointsBatch will add segments; but if points exist, draw whole.
+          if ((line.points || []).length) this.drawWholeLine(this.drawings.get(line.id));
         }
       });
-      this.socket.on('endLine', ({ id }) => {
-        // optional finalization handling
+
+      // points
+      this.socket.on('pointsBatch', ({ id, points }) => {
+        if (!id || !points) return;
+        let line = this.drawings.get(id);
+        if (!line) {
+          // create placeholder (server may have created earlier, but in case we never received newLine)
+          line = { id, tool: 'brush', color: '#000', width: 2, points: [] };
+          this.drawings.set(id, line);
+        }
+        const start = line.points.length;
+        // push points
+        line.points.push(...points);
+        this.drawSegmentBatch(line, start, line.points.length);
       });
+
       this.socket.on('lineDeleted', id => {
         this.drawings.delete(id);
+        this.createdLinesOrder = this.createdLinesOrder.filter(x => x !== id);
         this.redrawAll();
       });
+
       this.socket.on('canvasCleared', () => {
         this.drawings.clear();
+        this.createdLinesOrder = [];
         this.clearCanvas(this.drawingsCanvas);
       });
+
       this.socket.on('backgroundChanged', ({ backgroundUrl }) => {
-        this.setBackground(backgroundUrl);
+        if (backgroundUrl) this.setBackground(backgroundUrl);
       });
     }
 
-    loadState(state) {
-      // background
+    loadState(state){
+      if (!state) return;
       if (state.backgroundImage) this.setBackground(state.backgroundImage);
-      // drawings
       this.drawings.clear();
       (state.drawings || []).forEach(d => this.drawings.set(d.id, d));
+      // draw all existing
       this.redrawAll();
       this.loadingEl.style.display = 'none';
-      document.getElementById('usersCount').textContent = (state.users || []).length;
     }
 
-    // background: ensure square draw centered
-    setBackground(url) {
+    /////////////////////////////////////////////
+    // BACKGROUND
+    /////////////////////////////////////////////
+    setBackground(url){
       const img = new Image();
-      img.crossOrigin = 'anonymous';
+      img.crossOrigin = "anonymous";
       img.onload = () => {
         this.backgroundImage = img;
         this.drawBackground();
       };
-      img.onerror = () => console.warn('background load error', url);
+      img.onerror = () => {
+        console.warn('Ошибка загрузки фона', url);
+      };
       img.src = url;
     }
 
-    drawBackground() {
-      const c = this.backgroundCanvas, ctx = this.bgCtx;
+    drawBackground(){
+      const c = this.backgroundCanvas;
+      const ctx = this.bgCtx;
       ctx.clearRect(0,0,c.width,c.height);
       if (!this.backgroundImage) return;
-      // compute square size and center
-      const cw = c.width / this.dpr, ch = c.height / this.dpr;
-      const size = Math.min(cw, ch);
-      // drawImage uses canvas pixels already transformed by dpr => we've set transform to dpr already
-      const dx = (cw - size) / 2;
-      const dy = (ch - size) / 2;
-      ctx.drawImage(this.backgroundImage, 0, 0, this.backgroundImage.width, this.backgroundImage.height, dx, dy, size, size);
-    }
 
-    // pointer handlers
-    onPointerDown(pos) {
-      if (this.currentTool === 'diamond') {
-        const id = this.makeId();
-        const points = this.makeDiamond(pos.x, pos.y);
-        const line = { id, tool: 'diamond', points, color: this.currentColor, width: this.brushSize };
-        this.drawings.set(id, line);
-        this.drawWholeLine(line);
-        this.socket.emit('newLine', { id, tool: 'diamond', color: this.currentColor, width: this.brushSize });
-        this.socket.emit('pointsBatch', { id, points });
-        this.socket.emit('endLine', { id });
-        return;
+      // fill square preserving aspect by cover
+      const side = c.width / this.dpr;
+      const img = this.backgroundImage;
+      const ratioImg = img.width / img.height;
+      const sidePx = side;
+
+      // draw to fill (cover)
+      let sw = img.width, sh = img.height, sx=0, sy=0;
+      const canvasRatio = 1; // square
+      if (ratioImg > canvasRatio) {
+        // image wider => crop sides
+        const newW = img.height * canvasRatio;
+        sx = Math.round((img.width - newW) / 2);
+        sw = newW;
+      } else if (ratioImg < canvasRatio) {
+        // image taller => crop top/bottom
+        const newH = img.width / canvasRatio;
+        sy = Math.round((img.height - newH) / 2);
+        sh = newH;
       }
 
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sidePx, sidePx);
+    }
+
+    /////////////////////////////////////////////
+    // POINTER
+    /////////////////////////////////////////////
+    onPointerDown(pos){
       this.isDrawing = true;
-      this.currentLineId = this.makeId();
-      const newLine = { id: this.currentLineId, tool: this.currentTool, points: [{...pos}], color: this.currentColor, width: this.brushSize };
-      this.drawings.set(this.currentLineId, newLine);
-      this.pointsBuffer[this.currentLineId] = [ {...pos} ];
-      this.socket.emit('newLine', { id: this.currentLineId, tool: this.currentTool, color: this.currentColor, width: this.brushSize });
+      this.lineSeq += 1;
+      this.currentLineId = `${this.socket.id || 'anon'}-${Date.now()}-${this.lineSeq}`;
 
-      if (this.currentTool === 'brush') {
-        this.drawDot(pos.x, pos.y, this.currentColor, this.brushSize);
-      } else if (this.currentTool === 'eraser') {
-        // handle eraser immediate
-        this.handleEraser(pos);
-      } else {
-        // shapes: prepare overlay preview
-        this.overlayStart = pos;
-        this.overlayCur = pos;
-        this.clearCanvas(this.overlayCanvas);
-      }
+      const line = {
+        id: this.currentLineId,
+        tool: this.currentTool,
+        points: [pos],
+        color: this.currentColor,
+        width: this.brushSize
+      };
+
+      this.drawings.set(line.id, { ...line, points: [pos] });
+      this.pointsBuffer[line.id] = [pos];
+
+      // send meta (newLine)
+      this.socket.emit('newLine', {
+        id: line.id,
+        tool: line.tool,
+        color: line.color,
+        width: line.width
+      });
+
+      // track order for undo
+      this.createdLinesOrder.push(line.id);
+
+      // draw initial dot for brush
+      if (line.tool === 'brush') this.drawDot(pos.x, pos.y, line.color, line.width);
     }
 
-    onPointerMove(pos) {
+    onPointerMove(pos){
       if (!this.isDrawing) return;
-      if (this.currentTool === 'eraser') {
-        this.handleEraser(pos);
-        return;
-      }
-      if (this.currentTool === 'brush') {
-        const line = this.drawings.get(this.currentLineId);
-        line.points.push({...pos});
-        this.pointsBuffer[this.currentLineId] = this.pointsBuffer[this.currentLineId] || [];
-        this.pointsBuffer[this.currentLineId].push({...pos});
-        // draw immediately last segment
-        this.drawSegmentImmediate(line);
-      } else {
-        // shapes preview on overlay
-        this.overlayCur = pos;
-        this.renderOverlay();
-      }
+      const line = this.drawings.get(this.currentLineId);
+      if (!line) return;
+      // append and buffer (round to int to reduce packet size)
+      const p = { x: Math.round(pos.x), y: Math.round(pos.y) };
+      line.points.push(p);
+      this.pointsBuffer[line.id] = this.pointsBuffer[line.id] || [];
+      this.pointsBuffer[line.id].push(p);
+      // immediate draw
+      this.drawSegmentImmediate(line);
     }
 
-    onPointerUp() {
+    onPointerUp(){
       if (!this.isDrawing) return;
       this.isDrawing = false;
-      // finalize
-      if (this.currentTool === 'brush') {
+      if (this.currentLineId) {
         this.socket.emit('endLine', { id: this.currentLineId });
-      } else if (this.currentTool !== 'eraser') {
-        const points = this.generateShapePoints(this.currentTool, this.overlayStart, this.overlayCur, this.brushSize);
-        const line = this.drawings.get(this.currentLineId);
-        line.points = points;
-        this.drawWholeLine(line);
-        // push all to buffer
-        this.pointsBuffer[this.currentLineId] = points.slice();
-        this.socket.emit('endLine', { id: this.currentLineId });
+        this.currentLineId = null;
       }
-      this.currentLineId = null;
-      this.clearCanvas(this.overlayCanvas);
     }
 
-    // draw helpers
+    /////////////////////////////////////////////
+    // DRAW routines
+    /////////////////////////////////////////////
     drawDot(x,y,color,size){
       const ctx = this.drawCtx;
       ctx.beginPath();
       ctx.arc(x,y,size/2,0,Math.PI*2);
-      ctx.fillStyle = color; ctx.fill();
+      ctx.fillStyle = color;
+      ctx.fill();
     }
 
     drawSegmentImmediate(line){
       const pts = line.points;
       if (pts.length < 2) return;
-      const p1 = pts[pts.length-2], p2 = pts[pts.length-1];
+      const a = pts[pts.length-2], b = pts[pts.length-1];
+      if (!a || !b) return;
       const ctx = this.drawCtx;
       ctx.beginPath();
-      ctx.moveTo(p1.x,p1.y);
-      ctx.lineTo(p2.x,p2.y);
-      ctx.strokeStyle = line.color; ctx.lineWidth = line.width;
-      ctx.lineCap = ctx.lineJoin = 'round';
+      ctx.moveTo(a.x,a.y);
+      ctx.lineTo(b.x,b.y);
+      ctx.lineWidth = line.width;
+      ctx.strokeStyle = line.color;
       ctx.stroke();
     }
 
     drawSegmentBatch(line, start, end){
-      if (!line.points || line.points.length < 2) return;
       const ctx = this.drawCtx;
-      ctx.strokeStyle = line.color; ctx.lineWidth = line.width;
-      ctx.lineCap = ctx.lineJoin = 'round';
-      // draw from start to end indices
-      for (let i = Math.max(1, start); i < end; i++){
+      ctx.lineWidth = line.width;
+      ctx.strokeStyle = line.color;
+      for (let i = Math.max(1, start); i < end; i++) {
         const a = line.points[i-1], b = line.points[i];
         if (!a || !b) continue;
         ctx.beginPath();
@@ -317,203 +335,140 @@
       const ctx = this.drawCtx;
       ctx.beginPath();
       ctx.moveTo(line.points[0].x, line.points[0].y);
-      for (let i=1;i<line.points.length;i++){
-        ctx.lineTo(line.points[i].x, line.points[i].y);
-      }
-      ctx.strokeStyle = line.color; ctx.lineWidth = line.width;
-      ctx.lineCap = ctx.lineJoin = 'round';
+      for (let i=1;i<line.points.length;i++) ctx.lineTo(line.points[i].x, line.points[i].y);
+      ctx.lineWidth = line.width;
+      ctx.strokeStyle = line.color;
       ctx.stroke();
-    }
-
-    drawWholeLineFromMapEntry(entry) {
-      this.drawWholeLine(entry);
     }
 
     redrawAll(){
       this.clearCanvas(this.drawingsCanvas);
-      for (const line of this.drawings.values()) {
-        this.drawWholeLine(line);
-      }
+      for (const l of this.drawings.values()) this.drawWholeLine(l);
     }
 
-    clearCanvas(canvas){
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0,0,canvas.width,canvas.height);
+    clearCanvas(c){
+      c.getContext('2d').clearRect(0,0,c.width,c.height);
     }
 
-    // overlay preview for shapes
-    renderOverlay(){
-      this.clearCanvas(this.overlayCanvas);
-      if (!this.overlayStart || !this.overlayCur) return;
-      const a = this.overlayStart, b = this.overlayCur;
-      const ctx = this.ovCtx;
-      ctx.lineWidth = this.brushSize;
-      ctx.strokeStyle = this.currentColor;
-      ctx.setLineDash([6,6]);
-      ctx.beginPath();
-      if (this.currentTool === 'line'){
-        ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-      } else if (this.currentTool === 'rectangle'){
-        const x = Math.min(a.x,b.x), y = Math.min(a.y,b.y), w = Math.abs(a.x-b.x), h = Math.abs(a.y-b.y);
-        ctx.strokeRect(x,y,w,h);
-      } else if (this.currentTool === 'circle'){
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const r = Math.sqrt(dx*dx + dy*dy);
-        ctx.beginPath(); ctx.arc(a.x,a.y,r,0,Math.PI*2); ctx.stroke();
-      }
-      ctx.setLineDash([]);
-    }
-
-    // shape conversion
-    generateShapePoints(tool,a,b,size){
-      if (!a || !b) return [];
-      if (tool === 'line') return [a,b];
-      if (tool === 'rectangle') return [
-        {x:a.x,y:a.y},{x:b.x,y:a.y},{x:b.x,y:b.y},{x:a.x,y:b.y},{x:a.x,y:a.y}
-      ];
-      if (tool === 'circle') {
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const r = Math.sqrt(dx*dx + dy*dy);
-        const steps = 40;
-        const res = [];
-        for (let i=0;i<=steps;i++){
-          const th = (i/steps)*Math.PI*2;
-          res.push({ x: a.x + Math.cos(th)*r, y: a.y + Math.sin(th)*r });
-        }
-        return res;
-      }
-      return [];
-    }
-
-    makeDiamond(cx,cy){
-      const s = this.brushSize * 4;
-      return [{x:cx,y:cy-s},{x:cx+s,y:cy},{x:cx,y:cy+s},{x:cx-s,y:cy},{x:cx,y:cy-s}];
-    }
-
-    handleEraser(pos){
-      const r = this.brushSize * 2;
-      const toDelete = [];
-      for (const [id,line] of this.drawings){
-        for (let i=0;i<line.points.length;i++){
-          const p = line.points[i];
-          const dx = p.x - pos.x, dy = p.y - pos.y;
-          if (dx*dx + dy*dy <= r*r){ toDelete.push(id); break; }
-        }
-      }
-      if (toDelete.length){
-        toDelete.forEach(id => {
-          this.drawings.delete(id);
-          this.socket.emit('deleteLine', id);
-        });
-        this.redrawAll();
-      }
-    }
-
-    // sender: periodic batching
-    startSender(){
-      this.sendTimer = setInterval(() => {
-        for (const id of Object.keys(this.pointsBuffer)){
-          const buf = this.pointsBuffer[id];
-          if (!buf || buf.length === 0) { delete this.pointsBuffer[id]; continue; }
-          const sendCount = Math.min(MAX_POINTS_PER_BATCH, buf.length);
-          const toSend = buf.splice(0, sendCount);
-          // send as JSON; for production consider msgpack/protobuf binary encode
-          this.socket.emit('pointsBatch', { id, points: toSend });
-          if (buf.length === 0) delete this.pointsBuffer[id];
-        }
-      }, SEND_INTERVAL_MS);
-    }
-
-    // utils
-    makeId(){ return `${this.socket.id||'anon'}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
-
+    /////////////////////////////////////////////
+    // POSITION / SIZING
+    /////////////////////////////////////////////
     getCanvasPos(e){
       const rect = this.overlayCanvas.getBoundingClientRect();
-      const x = (e.clientX - rect.left) * (this.overlayCanvas.width / rect.width) / this.dpr;
-      const y = (e.clientY - rect.top)  * (this.overlayCanvas.height / rect.height) / this.dpr;
-      return { x, y };
+      const cssSize = rect.width; // square
+      const scale = (this.overlayCanvas.width / this.dpr) / cssSize;
+      return { x: (e.clientX - rect.left) * scale, y: (e.clientY - rect.top) * scale };
     }
 
-    // canvas sizing, retina
     adjustCanvases(){
-      // size to wrapper size, with min dims
       const rect = this.canvasWrap.getBoundingClientRect();
-      const cssW = Math.max(rect.width, MIN_CANVAS_WIDTH);
-      const cssH = Math.max(rect.height, MIN_CANVAS_HEIGHT);
+      let size;
+      if (window.innerWidth < 820) {
+        size = Math.min(window.innerWidth - 24, window.innerHeight - 120);
+      } else {
+        const ww = Math.max(rect.width, MIN_CANVAS);
+        const hh = Math.max(rect.height, MIN_CANVAS);
+        size = Math.min(ww, hh);
+      }
+
       this.dpr = window.devicePixelRatio || 1;
 
       [this.backgroundCanvas, this.drawingsCanvas, this.overlayCanvas].forEach(c => {
-        c.style.width = cssW + 'px';
-        c.style.height = cssH + 'px';
-        c.width = Math.floor(cssW * this.dpr);
-        c.height = Math.floor(cssH * this.dpr);
+        c.style.width = size + 'px';
+        c.style.height = size + 'px';
+        c.width = Math.floor(size * this.dpr);
+        c.height = Math.floor(size * this.dpr);
         const ctx = c.getContext('2d');
         ctx.setTransform(this.dpr,0,0,this.dpr,0,0);
-        ctx.lineJoin = ctx.lineCap = 'round';
+        ctx.lineCap = ctx.lineJoin = 'round';
       });
 
-      // redraw background and drawings to new size
       if (this.backgroundImage) this.drawBackground();
       this.redrawAll();
     }
 
-    renderLoop(){
-      // overlay drawn reactively on events; keep loop for animations if needed
-      requestAnimationFrame(()=>this.renderLoop());
-    }
+    /////////////////////////////////////////////
+    // BACKGROUND MODAL & upload
+    /////////////////////////////////////////////
+    openModal(){ this.bgModal.style.display = 'flex'; this.bgModal.setAttribute('aria-hidden','false'); }
+    closeModal(){ this.bgModal.style.display = 'none'; this.bgModal.setAttribute('aria-hidden','true'); }
 
-    // modal handling + upload background
-    openModal(){
-      this.bgModal.setAttribute('aria-hidden','false');
-      this.bgModal.style.display = 'flex';
-    }
-    closeModal(){
-      this.bgModal.setAttribute('aria-hidden','true');
-      this.bgModal.style.display = 'none';
-    }
     uploadBackground(){
       const file = this.bgInput.files && this.bgInput.files[0];
-      if (file){
-        const reader = new FileReader();
-        reader.onload = (ev) => {
+      if (file) {
+        const r = new FileReader();
+        r.onload = ev => {
           fetch('/upload-background', {
             method:'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ imageData: ev.target.result, fileName: file.name })
-          }).then(r=>r.json()).then(j => {
-            if (j.success) this.closeModal(); else alert('Ошибка: ' + (j.error || 'unknown'));
-          }).catch(err => alert('Ошибка загрузки: ' + err));
+          }).then(()=>this.closeModal());
         };
-        reader.readAsDataURL(file);
-      } else if (this.bgUrl.value.trim()){
-        const url = this.bgUrl.value.trim();
-        // convert remote image to dataURL via temporary canvas (CORS free if server allows)
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = () => {
-          const tmp = document.createElement('canvas');
-          tmp.width = img.width; tmp.height = img.height;
-          tmp.getContext('2d').drawImage(img,0,0);
-          const data = tmp.toDataURL('image/png');
-          fetch('/upload-background', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ imageData: data, fileName: 'bg-url.png' })
-          }).then(r=>r.json()).then(j => {
-            if (j.success) this.closeModal(); else alert('Ошибка: ' + (j.error || 'unknown'));
-          }).catch(err => alert('Ошибка: ' + err));
-        };
-        img.onerror = () => alert('Не удалось загрузить изображение по URL (CORS или неверный URL)');
-        img.src = url;
-      } else {
-        alert('Выберите файл или вставьте URL');
+        r.readAsDataURL(file);
+        return;
       }
+
+      const url = this.bgUrl.value.trim();
+      if (!url) return alert('Введите URL');
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const tmp = document.createElement('canvas');
+        tmp.width = img.width; tmp.height = img.height;
+        tmp.getContext('2d').drawImage(img,0,0);
+        const data = tmp.toDataURL('image/png');
+        fetch('/upload-background', {
+          method:'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ imageData: data, fileName: 'bg-url.png' })
+        }).then(()=>this.closeModal()).catch(()=>alert('Ошибка при загрузке'));
+      };
+      img.onerror = () => alert('Ошибка загрузки URL');
+      img.src = url;
     }
 
-    // util: debounce
-    debounce(fn, t=100){ let id; return (...a) => { clearTimeout(id); id = setTimeout(()=>fn(...a), t); }; }
-  }
+    /////////////////////////////////////////////
+    // SENDER
+    /////////////////////////////////////////////
+    startSender(){
+      setInterval(() => {
+        for (const id in this.pointsBuffer) {
+          const buf = this.pointsBuffer[id];
+          if (!buf || !buf.length) { delete this.pointsBuffer[id]; continue; }
 
-  // init
+          const pack = buf.splice(0, MAX_POINTS_PER_BATCH);
+          // send compacted: coords are already rounded
+          this.socket.emit('pointsBatch', { id, points: pack });
+
+          if (!buf.length) delete this.pointsBuffer[id];
+        }
+      }, SEND_INTERVAL_MS);
+    }
+
+    /////////////////////////////////////////////
+    // UNDO
+    /////////////////////////////////////////////
+    undoLast(){
+      if (!this.createdLinesOrder.length) return;
+      const lastId = this.createdLinesOrder.pop();
+      this.drawings.delete(lastId);
+      this.socket.emit('deleteLine', lastId);
+      this.redrawAll();
+    }
+
+    /////////////////////////////////////////////
+    // UTILS
+    /////////////////////////////////////////////
+    makeId(){
+      return `${this.socket.id || 'anon'}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;
+    }
+
+    debounce(f,t=100){ let id; return (...a) => { clearTimeout(id); id = setTimeout(()=>f(...a),t); }; }
+
+    renderLoop(){ requestAnimationFrame(()=>this.renderLoop()); }
+
+  } // class end
+
   document.addEventListener('DOMContentLoaded', () => {
     window.app = new SketchApp();
   });
