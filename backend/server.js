@@ -80,7 +80,6 @@ io.on('connection', (socket) => {
   io.emit('usersUpdate', canvasState.users);
   
   socket.on('drawing', (drawingData) => {
-    // Добавляем ID для каждой линии
     if (!drawingData.id) {
       drawingData.id = `${socket.id}-${Date.now()}`;
     }
@@ -88,13 +87,11 @@ io.on('connection', (socket) => {
     const existingIndex = canvasState.drawings.findIndex(d => d.id === drawingData.id);
     
     if (existingIndex >= 0) {
-      // Обновляем существующую линию
       canvasState.drawings[existingIndex] = {
         ...canvasState.drawings[existingIndex],
         ...drawingData
       };
     } else {
-      // Добавляем новую линию
       canvasState.drawings.push({
         id: drawingData.id,
         userId: socket.id,
