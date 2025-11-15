@@ -19,12 +19,10 @@ app.use(express.json({limit: '10mb'}));
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
-// Создаем папку для загрузок если её нет
 if (!fs.existsSync('uploads')) {
   fs.mkdirSync('uploads');
 }
 
-// Хранилище состояния
 let canvasState = {
   backgroundImage: null,
   drawings: [],
@@ -40,25 +38,21 @@ app.post('/upload-background', (req, res) => {
       return res.status(400).json({ error: 'No image data provided' });
     }
 
-    // Извлекаем base64 данные
     const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
     const buffer = Buffer.from(base64Data, 'base64');
     
-    // Генерируем имя файла
     const fileExtension = fileName ? fileName.split('.').pop() : 'png';
     const uniqueFileName = `background-${Date.now()}.${fileExtension}`;
     const filePath = path.join('uploads', uniqueFileName);
     
-    // Сохраняем файл
     fs.writeFileSync(filePath, buffer);
     
-    // Обновляем состояние
     const backgroundUrl = `/uploads/${uniqueFileName}`;
     canvasState.backgroundImage = backgroundUrl;
-    canvasState.drawings = []; // Очищаем рисунки при смене фона
+    canvasState.drawings = [];
     
-    // Уведомляем всех клиентов
     io.emit('backgroundChanged', { backgroundUrl });
+    io.emit('canvasCleared');
     
     res.json({ 
       success: true, 
@@ -88,21 +82,54 @@ io.on('connection', (socket) => {
   socket.emit('initialState', canvasState);
   io.emit('usersUpdate', canvasState.users);
   
-  socket.on('drawing', (data) => {
-    const drawing = {
-      id: Date.now().toString(),
+  // Обработка начала рисования линии
+  socket.on('startLine', (lineId) => {
+    canvasState.drawings.push({
+      id: lineId,
       userId: socket.id,
-      tool: data.tool,
-      points: data.points,
-      color: data.color,
-      width: data.width,
+      tool: 'brush',
+      points: [],
+      color: '#000000',
+      width: 3,
       timestamp: new Date()
-    };
-    
-    canvasState.drawings.push(drawing);
-    socket.broadcast.emit('drawing', drawing);
+    });
   });
   
+  // Обработка добавления точек в линию
+  socket.on('addPoints', (data) => {
+    const drawing = canvasState.drawings.find(d => d.id === data.lineId);
+    if (drawing) {
+      drawing.points.push(...data.points);
+      drawing.color = data.color;
+      drawing.width = data.width;
+      drawing.tool = data.tool;
+      
+      // Рассылаем обновление всем остальным
+      socket.broadcast.emit('drawingUpdate', {
+        lineId: data.lineId,
+        points: data.points,
+        color: data.color,
+        width: data.width,
+        tool: data.tool
+      });
+    }
+  });
+  
+  // Обработка завершения линии
+  socket.on('endLine', (lineId) => {
+    const drawing = canvasState.drawings.find(d => d.id === lineId);
+    if (drawing) {
+      drawing.completed = true;
+    }
+  });
+  
+  // Обработка удаления линии
+  socket.on('deleteLine', (lineId) => {
+    canvasState.drawings = canvasState.drawings.filter(d => d.id !== lineId);
+    io.emit('lineDeleted', lineId);
+  });
+  
+  // Обработка очистки холста
   socket.on('clearCanvas', () => {
     canvasState.drawings = [];
     io.emit('canvasCleared');
@@ -118,5 +145,4 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Сервер запущен на порту ${PORT}`);
-  console.log(`Для фронтенда: http://localhost:${PORT}`);
 });

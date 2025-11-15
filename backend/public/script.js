@@ -5,12 +5,12 @@ class DrawingApp {
         this.socket = io();
         
         this.isDrawing = false;
-        this.lastX = 0;
-        this.lastY = 0;
+        this.currentLineId = null;
         this.currentTool = 'brush';
         this.currentColor = '#ff0000';
         this.brushSize = 3;
         this.backgroundImage = null;
+        this.allDrawings = [];
         
         this.init();
     }
@@ -22,17 +22,14 @@ class DrawingApp {
     }
     
     setupEventListeners() {
-        // Инструменты
         document.getElementById('toolSelect').addEventListener('change', (e) => {
             this.currentTool = e.target.value;
         });
         
-        // Цвет
         document.getElementById('colorPicker').addEventListener('change', (e) => {
             this.currentColor = e.target.value;
         });
         
-        // Размер кисти
         const brushSize = document.getElementById('brushSize');
         const sizeValue = document.getElementById('sizeValue');
         
@@ -41,20 +38,15 @@ class DrawingApp {
             sizeValue.textContent = this.brushSize;
         });
         
-        // Очистка
         document.getElementById('clearBtn').addEventListener('click', () => {
             this.clearCanvas();
         });
         
-        // Загрузка фона
         document.getElementById('backgroundBtn').addEventListener('click', () => {
             this.openBackgroundModal();
         });
         
-        // Модальное окно
         this.setupModal();
-        
-        // События canvas
         this.setupCanvasEvents();
     }
     
@@ -64,35 +56,33 @@ class DrawingApp {
         this.canvas.addEventListener('mouseup', this.stopDrawing.bind(this));
         this.canvas.addEventListener('mouseout', this.stopDrawing.bind(this));
         
-        // Touch события для мобильных устройств
         this.canvas.addEventListener('touchstart', this.handleTouch.bind(this));
         this.canvas.addEventListener('touchmove', this.handleTouch.bind(this));
         this.canvas.addEventListener('touchend', this.stopDrawing.bind(this));
     }
     
     setupSocketListeners() {
-        // Получение начального состояния
         this.socket.on('initialState', (state) => {
             console.log('Получено начальное состояние:', state);
             this.loadState(state);
         });
         
-        // Новые рисунки от других пользователей
-        this.socket.on('drawing', (drawingData) => {
-            this.drawRemote(drawingData);
+        this.socket.on('drawingUpdate', (data) => {
+            this.updateDrawing(data);
         });
         
-        // Очистка холста
+        this.socket.on('lineDeleted', (lineId) => {
+            this.deleteLine(lineId);
+        });
+        
         this.socket.on('canvasCleared', () => {
             this.clearLocalCanvas();
         });
         
-        // Смена фона
         this.socket.on('backgroundChanged', (data) => {
             this.loadBackgroundImage(data.backgroundUrl);
         });
         
-        // Обновление пользователей
         this.socket.on('usersUpdate', (users) => {
             document.getElementById('usersCount').textContent = users.length;
         });
@@ -106,168 +96,186 @@ class DrawingApp {
     }
     
     startDrawing(e) {
+        if (this.currentTool === 'eraser') {
+            this.handleEraser(e);
+            return;
+        }
+        
         this.isDrawing = true;
         const pos = this.getMousePos(e);
-        [this.lastX, this.lastY] = [pos.x, pos.y];
         
-        // Для инструментов, которые рисуют сразу (точки)
-        if (this.currentTool === 'brush' || this.currentTool === 'eraser') {
-            this.drawDot(pos.x, pos.y);
-        }
+        // Создаем новую линию
+        this.currentLineId = 'line-' + Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+        
+        // Начинаем новую линию на сервере
+        this.socket.emit('startLine', this.currentLineId);
+        
+        // Добавляем первую точку
+        this.addPoint(pos.x, pos.y);
     }
     
     draw(e) {
         if (!this.isDrawing) return;
         
         const pos = this.getMousePos(e);
-        const points = [
-            { x: this.lastX, y: this.lastY },
-            { x: pos.x, y: pos.y }
-        ];
         
-        switch (this.currentTool) {
-            case 'brush':
-            case 'eraser':
-                this.drawLine(points);
-                this.sendDrawingData(points);
-                break;
-            case 'line':
-                this.previewLine(this.lastX, this.lastY, pos.x, pos.y);
-                break;
-            case 'rectangle':
-                this.previewRect(this.lastX, this.lastY, pos.x, pos.y);
-                break;
-            case 'circle':
-                this.previewCircle(this.lastX, this.lastY, pos.x, pos.y);
-                break;
+        if (this.currentTool === 'eraser') {
+            this.handleEraser(e);
+        } else {
+            this.addPoint(pos.x, pos.y);
         }
-        
-        [this.lastX, this.lastY] = [pos.x, pos.y];
     }
     
-    stopDrawing(e) {
+    stopDrawing() {
         if (!this.isDrawing) return;
         
-        const pos = this.getMousePos(e);
-        
-        if (this.currentTool === 'line') {
-            this.drawFinalLine(this.lastX, this.lastY, pos.x, pos.y);
-            this.sendDrawingData([{x: this.lastX, y: this.lastY}, {x: pos.x, y: pos.y}], 'line');
-        } else if (this.currentTool === 'rectangle') {
-            this.drawFinalRect(this.lastX, this.lastY, pos.x, pos.y);
-            this.sendDrawingData([{x: this.lastX, y: this.lastY}, {x: pos.x, y: pos.y}], 'rectangle');
-        } else if (this.currentTool === 'circle') {
-            this.drawFinalCircle(this.lastX, this.lastY, pos.x, pos.y);
-            this.sendDrawingData([{x: this.lastX, y: this.lastY}, {x: pos.x, y: pos.y}], 'circle');
-        }
-        
         this.isDrawing = false;
-        this.redrawCanvas(); // Убираем превью
-    }
-    
-    drawLine(points) {
-        this.ctx.beginPath();
-        this.ctx.moveTo(points[0].x, points[0].y);
-        this.ctx.lineTo(points[1].x, points[1].y);
-        this.ctx.stroke();
-    }
-    
-    drawDot(x, y) {
-        this.ctx.beginPath();
-        this.ctx.arc(x, y, this.brushSize / 2, 0, Math.PI * 2);
-        this.ctx.fill();
         
-        // Отправляем точку как линию с одинаковыми координатами
-        this.sendDrawingData([{x, y}, {x, y}]);
+        if (this.currentLineId) {
+            this.socket.emit('endLine', this.currentLineId);
+            this.currentLineId = null;
+        }
     }
     
-    previewLine(x1, y1, x2, y2) {
-        this.redrawCanvas(); // Перерисовываем canvas для превью
-        this.ctx.beginPath();
-        this.ctx.moveTo(x1, y1);
-        this.ctx.lineTo(x2, y2);
-        this.ctx.stroke();
-    }
-    
-    drawFinalLine(x1, y1, x2, y2) {
-        this.redrawCanvas();
-        this.ctx.beginPath();
-        this.ctx.moveTo(x1, y1);
-        this.ctx.lineTo(x2, y2);
-        this.ctx.stroke();
-    }
-    
-    previewRect(x1, y1, x2, y2) {
-        this.redrawCanvas();
-        this.ctx.beginPath();
-        this.ctx.rect(x1, y1, x2 - x1, y2 - y1);
-        this.ctx.stroke();
-    }
-    
-    drawFinalRect(x1, y1, x2, y2) {
-        this.redrawCanvas();
-        this.ctx.beginPath();
-        this.ctx.rect(x1, y1, x2 - x1, y2 - y1);
-        this.ctx.stroke();
-    }
-    
-    previewCircle(x1, y1, x2, y2) {
-        this.redrawCanvas();
-        const radius = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-        this.ctx.beginPath();
-        this.ctx.arc(x1, y1, radius, 0, Math.PI * 2);
-        this.ctx.stroke();
-    }
-    
-    drawFinalCircle(x1, y1, x2, y2) {
-        this.redrawCanvas();
-        const radius = Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2));
-        this.ctx.beginPath();
-        this.ctx.arc(x1, y1, radius, 0, Math.PI * 2);
-        this.ctx.stroke();
-    }
-    
-    drawRemote(drawingData) {
-        const originalColor = this.ctx.strokeStyle;
-        const originalWidth = this.ctx.lineWidth;
+    addPoint(x, y) {
+        if (!this.currentLineId) return;
         
-        this.ctx.strokeStyle = drawingData.color;
-        this.ctx.lineWidth = drawingData.width;
+        const point = { x, y };
         
-        if (drawingData.tool === 'brush' || drawingData.tool === 'eraser') {
-            this.drawLine(drawingData.points);
-        } else if (drawingData.tool === 'line') {
-            const points = drawingData.points;
-            this.drawFinalLine(points[0].x, points[0].y, points[1].x, points[1].y);
-        } else if (drawingData.tool === 'rectangle') {
-            const points = drawingData.points;
-            this.drawFinalRect(points[0].x, points[0].y, points[1].x, points[1].y);
-        } else if (drawingData.tool === 'circle') {
-            const points = drawingData.points;
-            this.drawFinalCircle(points[0].x, points[0].y, points[1].x, points[1].y);
+        // Находим текущую линию
+        let currentLine = this.allDrawings.find(d => d.id === this.currentLineId);
+        if (!currentLine) {
+            currentLine = {
+                id: this.currentLineId,
+                tool: this.currentTool,
+                points: [point],
+                color: this.currentColor,
+                width: this.brushSize
+            };
+            this.allDrawings.push(currentLine);
+        } else {
+            currentLine.points.push(point);
         }
         
-        this.ctx.strokeStyle = originalColor;
-        this.ctx.lineWidth = originalWidth;
-    }
-    
-    sendDrawingData(points, tool = null) {
-        const drawingTool = tool || this.currentTool;
-        const drawingColor = drawingTool === 'eraser' ? '#000000' : this.currentColor;
+        // Перерисовываем холст
+        this.redrawCanvas();
         
-        this.socket.emit('drawing', {
-            tool: drawingTool,
-            points: points,
-            color: drawingColor,
-            width: this.brushSize
+        // Отправляем точку на сервер
+        this.socket.emit('addPoints', {
+            lineId: this.currentLineId,
+            points: [point],
+            color: this.currentColor,
+            width: this.brushSize,
+            tool: this.currentTool
         });
     }
     
-    clearCanvas() {
-        if (confirm('Очистить весь холст? Все рисунки будут удалены.')) {
-            this.socket.emit('clearCanvas');
-            this.clearLocalCanvas();
+    handleEraser(e) {
+        const pos = this.getMousePos(e);
+        const eraserRadius = this.brushSize;
+        
+        // Ищем линии, которые пересекаются с ластиком
+        const linesToDelete = [];
+        
+        this.allDrawings.forEach(drawing => {
+            for (let i = 0; i < drawing.points.length - 1; i++) {
+                const p1 = drawing.points[i];
+                const p2 = drawing.points[i + 1];
+                
+                if (this.isPointNearLine(pos, p1, p2, eraserRadius)) {
+                    linesToDelete.push(drawing.id);
+                    break;
+                }
+            }
+        });
+        
+        // Удаляем найденные линии
+        linesToDelete.forEach(lineId => {
+            this.deleteLine(lineId);
+            this.socket.emit('deleteLine', lineId);
+        });
+        
+        // Перерисовываем холст
+        this.redrawCanvas();
+    }
+    
+    isPointNearLine(point, lineStart, lineEnd, radius) {
+        // Вычисляем расстояние от точки до линии
+        const A = point.x - lineStart.x;
+        const B = point.y - lineStart.y;
+        const C = lineEnd.x - lineStart.x;
+        const D = lineEnd.y - lineStart.y;
+        
+        const dot = A * C + B * D;
+        const lenSq = C * C + D * D;
+        let param = -1;
+        
+        if (lenSq !== 0) {
+            param = dot / lenSq;
         }
+        
+        let xx, yy;
+        
+        if (param < 0) {
+            xx = lineStart.x;
+            yy = lineStart.y;
+        } else if (param > 1) {
+            xx = lineEnd.x;
+            yy = lineEnd.y;
+        } else {
+            xx = lineStart.x + param * C;
+            yy = lineStart.y + param * D;
+        }
+        
+        const dx = point.x - xx;
+        const dy = point.y - yy;
+        return Math.sqrt(dx * dx + dy * dy) <= radius;
+    }
+    
+    updateDrawing(data) {
+        let drawing = this.allDrawings.find(d => d.id === data.lineId);
+        if (!drawing) {
+            drawing = {
+                id: data.lineId,
+                tool: data.tool,
+                points: [],
+                color: data.color,
+                width: data.width
+            };
+            this.allDrawings.push(drawing);
+        }
+        
+        drawing.points.push(...data.points);
+        drawing.color = data.color;
+        drawing.width = data.width;
+        drawing.tool = data.tool;
+        
+        this.redrawCanvas();
+    }
+    
+    deleteLine(lineId) {
+        this.allDrawings = this.allDrawings.filter(d => d.id !== lineId);
+        this.redrawCanvas();
+    }
+    
+    redrawCanvas() {
+        this.clearLocalCanvas();
+        
+        // Рисуем все линии
+        this.allDrawings.forEach(drawing => {
+            if (drawing.points.length < 2) return;
+            
+            this.ctx.beginPath();
+            this.ctx.moveTo(drawing.points[0].x, drawing.points[0].y);
+            
+            for (let i = 1; i < drawing.points.length; i++) {
+                this.ctx.lineTo(drawing.points[i].x, drawing.points[i].y);
+            }
+            
+            this.ctx.strokeStyle = drawing.color;
+            this.ctx.lineWidth = drawing.width;
+            this.ctx.stroke();
+        });
     }
     
     clearLocalCanvas() {
@@ -277,9 +285,12 @@ class DrawingApp {
         }
     }
     
-    redrawCanvas() {
-        this.clearLocalCanvas();
-        // Здесь можно добавить перерисовку всех элементов, если нужно
+    clearCanvas() {
+        if (confirm('Очистить весь холст? Все рисунки будут удалены.')) {
+            this.socket.emit('clearCanvas');
+            this.allDrawings = [];
+            this.clearLocalCanvas();
+        }
     }
     
     getMousePos(e) {
@@ -344,7 +355,6 @@ class DrawingApp {
             reader.onload = (e) => {
                 const imageData = e.target.result;
                 
-                // Отправляем на сервер
                 fetch('/upload-background', {
                     method: 'POST',
                     headers: {
@@ -358,9 +368,7 @@ class DrawingApp {
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        console.log('Фон загружен на сервер:', data.backgroundUrl);
                         document.getElementById('backgroundModal').style.display = 'none';
-                        // Фон автоматически установится через socket.io событие
                     } else {
                         alert('Ошибка загрузки фона: ' + data.error);
                     }
@@ -373,7 +381,6 @@ class DrawingApp {
             
             reader.readAsDataURL(file);
         } else if (urlInput.value) {
-            // Для URL сначала загружаем изображение, потом отправляем как base64
             this.loadImageFromUrl(urlInput.value);
         } else {
             alert('Пожалуйста, выберите файл или введите URL');
@@ -385,7 +392,6 @@ class DrawingApp {
         img.crossOrigin = 'anonymous';
         
         img.onload = () => {
-            // Создаем canvas для конвертации в base64
             const tempCanvas = document.createElement('canvas');
             const tempCtx = tempCanvas.getContext('2d');
             tempCanvas.width = img.width;
@@ -394,7 +400,6 @@ class DrawingApp {
             
             const imageData = tempCanvas.toDataURL('image/png');
             
-            // Отправляем на сервер
             fetch('/upload-background', {
                 method: 'POST',
                 headers: {
@@ -408,7 +413,6 @@ class DrawingApp {
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    console.log('Фон загружен на сервер:', data.backgroundUrl);
                     document.getElementById('backgroundModal').style.display = 'none';
                 } else {
                     alert('Ошибка загрузки фона: ' + data.error);
@@ -445,17 +449,14 @@ class DrawingApp {
             this.loadBackgroundImage(state.backgroundImage);
         }
         
-        // Загружаем историю рисунков
-        state.drawings.forEach(drawing => {
-            this.drawRemote(drawing);
-        });
+        this.allDrawings = state.drawings || [];
+        this.redrawCanvas();
         
         document.getElementById('usersCount').textContent = state.users.length;
         document.getElementById('loading').style.display = 'none';
     }
 }
 
-// Инициализация приложения когда DOM загружен
 document.addEventListener('DOMContentLoaded', () => {
     new DrawingApp();
 });
