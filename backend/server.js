@@ -2,125 +2,100 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 app.use(cors());
 app.use(express.json({limit: '10mb'}));
 app.use(express.static('public'));
-app.use('/uploads', express.static('uploads'));
 
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
-
+// Оптимизированное хранилище
 let canvasState = {
   backgroundImage: null,
-  drawings: [],
+  lines: new Map(), // Map для быстрого доступа: id -> {points, color, width}
   users: []
 };
 
-app.post('/upload-background', (req, res) => {
-  try {
-    const { imageData, fileName } = req.body;
-    
-    if (!imageData) {
-      return res.status(400).json({ error: 'No image data provided' });
-    }
-
-    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
-    const buffer = Buffer.from(base64Data, 'base64');
-    
-    const fileExtension = fileName ? fileName.split('.').pop() : 'png';
-    const uniqueFileName = `background-${Date.now()}.${fileExtension}`;
-    const filePath = path.join('uploads', uniqueFileName);
-    
-    fs.writeFileSync(filePath, buffer);
-    
-    const backgroundUrl = `/uploads/${uniqueFileName}`;
-    canvasState.backgroundImage = backgroundUrl;
-    canvasState.drawings = [];
-    
-    io.emit('backgroundChanged', { backgroundUrl });
-    io.emit('canvasCleared');
-    
-    res.json({ 
-      success: true, 
-      backgroundUrl
-    });
-    
-  } catch (error) {
-    console.error('Ошибка загрузки фона:', error);
-    res.status(500).json({ error: 'Ошибка загрузки фона' });
-  }
-});
-
-app.get('/state', (req, res) => {
-  res.json(canvasState);
-});
+// Ограничители для производительности
+const MAX_LINES = 200;
+const MAX_POINTS_PER_LINE = 1000;
 
 io.on('connection', (socket) => {
-  console.log('Новый пользователь подключен:', socket.id);
+  console.log('Новый пользователь:', socket.id);
   
-  canvasState.users.push({
-    id: socket.id,
-    connectedAt: new Date()
+  canvasState.users.push({ id: socket.id, connectedAt: new Date() });
+  
+  // Отправляем оптимизированное состояние
+  const linesArray = Array.from(canvasState.lines.entries()).map(([id, line]) => ({
+    id, points: line.points, color: line.color, width: line.width
+  }));
+  
+  socket.emit('initialState', {
+    backgroundImage: canvasState.backgroundImage,
+    lines: linesArray,
+    users: canvasState.users
   });
   
-  socket.emit('initialState', canvasState);
   io.emit('usersUpdate', canvasState.users);
-  
-  socket.on('drawing', (drawingData) => {
-    // Добавляем ID для каждой линии
-    if (!drawingData.id) {
-      drawingData.id = `${socket.id}-${Date.now()}`;
+
+  // ОПТИМИЗИРОВАННАЯ ЛОГИКА ПЕРЕДАЧИ
+  socket.on('startLine', (data) => {
+    const { id, color, width } = data;
+    
+    // Новая линия
+    canvasState.lines.set(id, {
+      points: [],
+      color: color,
+      width: width,
+      userId: socket.id
+    });
+    
+    // Ограничиваем общее количество линий
+    if (canvasState.lines.size > MAX_LINES) {
+      const firstKey = canvasState.lines.keys().next().value;
+      canvasState.lines.delete(firstKey);
     }
     
-    const existingIndex = canvasState.drawings.findIndex(d => d.id === drawingData.id);
+    socket.broadcast.emit('startLine', data);
+  });
+
+  socket.on('addPoints', (data) => {
+    const { id, points } = data;
+    const line = canvasState.lines.get(id);
     
-    if (existingIndex >= 0) {
-      // Обновляем существующую линию
-      canvasState.drawings[existingIndex] = {
-        ...canvasState.drawings[existingIndex],
-        ...drawingData
-      };
-    } else {
-      // Добавляем новую линию
-      canvasState.drawings.push({
-        id: drawingData.id,
-        userId: socket.id,
-        tool: drawingData.tool,
-        points: drawingData.points,
-        color: drawingData.color,
-        width: drawingData.width,
-        timestamp: new Date()
-      });
+    if (line) {
+      // Добавляем только новые точки с ограничением
+      line.points = [...line.points, ...points].slice(-MAX_POINTS_PER_LINE);
+      
+      // Отправляем только новые точки
+      socket.broadcast.emit('addPoints', data);
     }
-    
-    socket.broadcast.emit('drawing', drawingData);
   });
-  
-  socket.on('deleteLine', (lineId) => {
-    canvasState.drawings = canvasState.drawings.filter(d => d.id !== lineId);
-    io.emit('lineDeleted', lineId);
+
+  socket.on('endLine', (id) => {
+    socket.broadcast.emit('endLine', id);
   });
-  
+
+  socket.on('deleteLine', (id) => {
+    canvasState.lines.delete(id);
+    io.emit('deleteLine', id);
+  });
+
   socket.on('clearCanvas', () => {
-    canvasState.drawings = [];
-    io.emit('canvasCleared');
+    canvasState.lines.clear();
+    io.emit('clearCanvas');
   });
-  
+
+  socket.on('uploadBackground', (data) => {
+    canvasState.backgroundImage = data.backgroundUrl;
+    socket.broadcast.emit('backgroundChanged', data);
+  });
+
   socket.on('disconnect', () => {
-    console.log('Пользователь отключен:', socket.id);
     canvasState.users = canvasState.users.filter(user => user.id !== socket.id);
     io.emit('usersUpdate', canvasState.users);
   });
