@@ -3,95 +3,71 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-  <title>StratSketch — оптимизированный</title>
+  <title>SketchBoard — оптимизированный</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="container">
+    <div class="app">
+        <!-- Верхняя панель -->
+        <header class="topbar">
+            <div class="logo">StratSketch</div>
+            <div class="online">👥 <span id="usersCount">0</span></div>
+        </header>
 
-    <header class="header">
-      <h1 class="logo">StratSketch</h1>
-      <div class="status">
-        <div class="online">👥 <span id="usersCount">0</span></div>
-      </div>
-    </header>
+        <!-- Левая панель инструментов -->
+        <aside class="tools">
+            <button class="tool active" data-tool="brush">🖌</button>
+            <button class="tool" data-tool="line">📏</button>
+            <button class="tool" data-tool="rectangle">▭</button>
+            <button class="tool" data-tool="circle">◯</button>
+            <button class="tool" data-tool="diamond">◇</button>
+            <button class="tool" data-tool="eraser">🧽</button>
 
-    <div class="controls">
-      <div class="tool-section">
-        <select id="toolSelect" aria-label="Инструмент">
-          <option value="brush">🖌 Кисть</option>
-          <option value="line">📏 Линия</option>
-          <option value="rectangle">▭ Прямоугольник</option>
-          <option value="circle">◯ Круг</option>
-          <option value="diamond">◇ Ромб</option>
-          <option value="eraser">🧽 Ластик</option>
-        </select>
-      </div>
+            <input type="color" id="colorPicker" value="#ff6b6b"/>
+            <div class="size-display">Размер: <span id="sizeValue">3</span></div>
+            <input type="range" id="brushSize" min="1" max="50" value="3">
 
-      <div class="color-section">
-        <input type="color" id="colorPicker" title="Цвет" />
-      </div>
+            <button id="clearBtn" class="danger">🗑 Очистить</button>
+            <button id="backgroundBtn">🖼 Фон</button>
+        </aside>
 
-      <div class="size-section">
-        <input type="range" id="brushSize" min="1" max="50" value="3" />
-        <span id="sizeValue">3</span>
-      </div>
-
-      <div class="actions">
-        <button id="undoBtn" title="Отменить последнюю линию">↶ Undo</button>
-        <button id="clearBtn" class="danger" title="Очистить холст">🗑 Очистить</button>
-        <button id="backgroundBtn" title="Фон">🖼 Фон</button>
-      </div>
-    </div>
-
-    <div class="main">
-      <aside class="sidebar" aria-hidden="true">
-        <button class="tool" data-tool="brush">🖌</button>
-        <button class="tool" data-tool="line">📏</button>
-        <button class="tool" data-tool="rectangle">▭</button>
-        <button class="tool" data-tool="circle">◯</button>
-        <button class="tool" data-tool="diamond">◇</button>
-        <button class="tool" data-tool="eraser">🧽</button>
-      </aside>
-
-      <div class="canvas-container" id="canvasWrap">
-        <div class="canvas-square">
-          <!-- три слоя канваса -->
-          <canvas id="backgroundCanvas"></canvas>
-          <canvas id="drawingsCanvas"></canvas>
-          <canvas id="overlayCanvas"></canvas>
-
-          <div id="loading" class="loading">Загрузка…</div>
+        <!-- Мобильные контролы -->
+        <div class="mobile-controls">
+            <select id="toolSelectMobile">
+                <option value="brush">Кисть</option>
+                <option value="line">Линия</option>
+                <option value="rectangle">Прямоугольник</option>
+                <option value="circle">Круг</option>
+                <option value="diamond">Ромб</option>
+                <option value="eraser">Ластик</option>
+            </select>
+            <input type="color" id="colorPickerMobile" value="#ff6b6b"/>
+            <input type="range" id="brushSizeMobile" min="1" max="50" value="3">
         </div>
-      </div>
 
+        <!-- Сам холст -->
+        <main class="canvas-container">
+            <div class="canvas-square">
+                <canvas id="backgroundCanvas"></canvas>
+                <canvas id="drawingsCanvas"></canvas>
+                <canvas id="overlayCanvas"></canvas>
+                <div id="loading" class="loading">Загрузка…</div>
+            </div>
+        </main>
     </div>
 
-    <!-- мобильная нижняя панель -->
-    <nav class="mobile-bar">
-      <button class="mtool" data-tool="brush">🖌</button>
-      <button class="mtool" data-tool="line">📏</button>
-      <button class="mtool" data-tool="eraser">🧽</button>
-      <input class="mcolor" type="color" id="colorPickerMobile" />
-      <input class="msize" type="range" id="brushSizeMobile" min="1" max="50" value="3" />
-    </nav>
-  </div>
-
-  <!-- модалка -->
-  <div id="backgroundModal" class="modal" aria-hidden="true">
-    <div class="modal-content">
-      <button class="close" id="modalClose">&times;</button>
-      <h2>Фон</h2>
-      <input type="file" id="backgroundInput" accept="image/*">
-      <input type="text" id="backgroundUrl" placeholder="https://example.com/img.png">
-      <div style="display:flex;gap:8px;margin-top:8px;">
-        <button id="loadBackgroundBtn">Загрузить</button>
-        <button id="cancelBgBtn">Отмена</button>
-      </div>
+    <!-- модалка -->
+    <div id="backgroundModal" class="modal">
+        <div class="modal-content">
+            <span class="close" id="modalClose">&times;</span>
+            <h2>Фон</h2>
+            <input type="file" id="backgroundInput" accept="image/*">
+            <input type="text" id="backgroundUrl" placeholder="https://example.com/img.png">
+            <button id="loadBackgroundBtn">Загрузить</button>
+        </div>
     </div>
-  </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="script.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
