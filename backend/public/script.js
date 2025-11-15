@@ -325,7 +325,7 @@ class DrawingApp {
         };
         
         loadBtn.onclick = () => {
-            this.loadBackground();
+            this.uploadBackgroundToServer();
         };
     }
     
@@ -333,7 +333,7 @@ class DrawingApp {
         document.getElementById('backgroundModal').style.display = 'block';
     }
     
-    loadBackground() {
+    uploadBackgroundToServer() {
         const fileInput = document.getElementById('backgroundInput');
         const urlInput = document.getElementById('backgroundUrl');
         
@@ -342,31 +342,89 @@ class DrawingApp {
             const reader = new FileReader();
             
             reader.onload = (e) => {
-                this.setBackgroundImage(e.target.result);
-                document.getElementById('backgroundModal').style.display = 'none';
+                const imageData = e.target.result;
+                
+                // Отправляем на сервер
+                fetch('/upload-background', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        imageData: imageData,
+                        fileName: file.name
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        console.log('Фон загружен на сервер:', data.backgroundUrl);
+                        document.getElementById('backgroundModal').style.display = 'none';
+                        // Фон автоматически установится через socket.io событие
+                    } else {
+                        alert('Ошибка загрузки фона: ' + data.error);
+                    }
+                })
+                .catch(error => {
+                    console.error('Ошибка:', error);
+                    alert('Ошибка загрузки фона');
+                });
             };
             
             reader.readAsDataURL(file);
         } else if (urlInput.value) {
-            this.setBackgroundImage(urlInput.value);
-            document.getElementById('backgroundModal').style.display = 'none';
+            // Для URL сначала загружаем изображение, потом отправляем как base64
+            this.loadImageFromUrl(urlInput.value);
         } else {
             alert('Пожалуйста, выберите файл или введите URL');
         }
     }
     
-    setBackgroundImage(src) {
+    loadImageFromUrl(url) {
         const img = new Image();
+        img.crossOrigin = 'anonymous';
+        
         img.onload = () => {
-            this.backgroundImage = img;
-            this.redrawCanvas();
-            // Здесь можно добавить отправку на сервер, когда реализуем загрузку
-            console.log('Фон загружен:', src);
+            // Создаем canvas для конвертации в base64
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = img.width;
+            tempCanvas.height = img.height;
+            tempCtx.drawImage(img, 0, 0);
+            
+            const imageData = tempCanvas.toDataURL('image/png');
+            
+            // Отправляем на сервер
+            fetch('/upload-background', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    imageData: imageData,
+                    fileName: 'background-from-url.png'
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('Фон загружен на сервер:', data.backgroundUrl);
+                    document.getElementById('backgroundModal').style.display = 'none';
+                } else {
+                    alert('Ошибка загрузки фона: ' + data.error);
+                }
+            })
+            .catch(error => {
+                console.error('Ошибка:', error);
+                alert('Ошибка загрузки фона');
+            });
         };
+        
         img.onerror = () => {
-            alert('Ошибка загрузки изображения');
+            alert('Ошибка загрузки изображения по URL');
         };
-        img.src = src;
+        
+        img.src = url;
     }
     
     loadBackgroundImage(url) {
@@ -375,6 +433,9 @@ class DrawingApp {
         img.onload = () => {
             this.backgroundImage = img;
             this.redrawCanvas();
+        };
+        img.onerror = () => {
+            console.error('Ошибка загрузки фонового изображения:', url);
         };
         img.src = url;
     }

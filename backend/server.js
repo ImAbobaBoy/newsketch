@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const multer = require('multer');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
@@ -14,65 +14,62 @@ const io = socketIo(server, {
   }
 });
 
-// Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({limit: '10mb'}));
 app.use(express.static('public'));
 app.use('/uploads', express.static('uploads'));
 
-// Настройка multer для загрузки изображений
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (req, file, cb) => {
-    cb(null, `background-${Date.now()}${path.extname(file.originalname)}`);
-  }
-});
+// Создаем папку для загрузок если её нет
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads');
+}
 
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-  fileFilter: (req, file, cb) => {
-    const filetypes = /jpeg|jpg|png|gif/;
-    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = filetypes.test(file.mimetype);
-    
-    if (mimetype && extname) {
-      return cb(null, true);
-    } else {
-      cb(new Error('Только изображения!'));
-    }
-  }
-});
-
-// Хранилище состояния (в памяти, для продакшена лучше Redis)
+// Хранилище состояния
 let canvasState = {
   backgroundImage: null,
   drawings: [],
   users: []
 };
 
-// API Routes
-app.post('/upload', upload.single('image'), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded' });
-  }
+// API для загрузки фона
+app.post('/upload-background', (req, res) => {
+  try {
+    const { imageData, fileName } = req.body;
+    
+    if (!imageData) {
+      return res.status(400).json({ error: 'No image data provided' });
+    }
 
-  const backgroundUrl = `/uploads/${req.file.filename}`;
-  canvasState.backgroundImage = backgroundUrl;
-  
-  // Очищаем старые рисунки при загрузке нового фона
-  canvasState.drawings = [];
-  
-  // Уведомляем всех клиентов о новом фоне
-  io.emit('backgroundChanged', { backgroundUrl });
-  
-  res.json({ 
-    success: true, 
-    backgroundUrl,
-    message: 'Фон успешно загружен' 
-  });
+    // Извлекаем base64 данные
+    const base64Data = imageData.replace(/^data:image\/\w+;base64,/, '');
+    const buffer = Buffer.from(base64Data, 'base64');
+    
+    // Генерируем имя файла
+    const fileExtension = fileName ? fileName.split('.').pop() : 'png';
+    const uniqueFileName = `background-${Date.now()}.${fileExtension}`;
+    const filePath = path.join('uploads', uniqueFileName);
+    
+    // Сохраняем файл
+    fs.writeFileSync(filePath, buffer);
+    
+    // Обновляем состояние
+    const backgroundUrl = `/uploads/${uniqueFileName}`;
+    canvasState.backgroundImage = backgroundUrl;
+    canvasState.drawings = []; // Очищаем рисунки при смене фона
+    
+    // Уведомляем всех клиентов
+    io.emit('backgroundChanged', { backgroundUrl });
+    
+    res.json({ 
+      success: true, 
+      backgroundUrl,
+      message: 'Фон успешно загружен и синхронизирован' 
+    });
+    
+  } catch (error) {
+    console.error('Ошибка загрузки фона:', error);
+    res.status(500).json({ error: 'Ошибка загрузки фона' });
+  }
 });
 
 app.get('/state', (req, res) => {
@@ -83,21 +80,15 @@ app.get('/state', (req, res) => {
 io.on('connection', (socket) => {
   console.log('Новый пользователь подключен:', socket.id);
   
-  // Добавляем пользователя
   canvasState.users.push({
     id: socket.id,
     connectedAt: new Date()
   });
   
-  // Отправляем текущее состояние новому пользователю
   socket.emit('initialState', canvasState);
-  
-  // Уведомляем всех о новом пользователе
   io.emit('usersUpdate', canvasState.users);
   
-  // Обработка рисования
   socket.on('drawing', (data) => {
-    // Добавляем рисунок в историю
     const drawing = {
       id: Date.now().toString(),
       userId: socket.id,
@@ -109,32 +100,20 @@ io.on('connection', (socket) => {
     };
     
     canvasState.drawings.push(drawing);
-    
-    // Рассылаем всем остальным пользователям
     socket.broadcast.emit('drawing', drawing);
   });
   
-  // Обработка очистки холста
   socket.on('clearCanvas', () => {
     canvasState.drawings = [];
     io.emit('canvasCleared');
   });
   
-  // Обработка отключения
   socket.on('disconnect', () => {
     console.log('Пользователь отключен:', socket.id);
-    
-    // Удаляем пользователя
     canvasState.users = canvasState.users.filter(user => user.id !== socket.id);
     io.emit('usersUpdate', canvasState.users);
   });
 });
-
-// Создаем папку для загрузок
-const fs = require('fs');
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
-}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
