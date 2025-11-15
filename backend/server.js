@@ -29,7 +29,6 @@ let canvasState = {
   users: []
 };
 
-// API для загрузки фона
 app.post('/upload-background', (req, res) => {
   try {
     const { imageData, fileName } = req.body;
@@ -56,8 +55,7 @@ app.post('/upload-background', (req, res) => {
     
     res.json({ 
       success: true, 
-      backgroundUrl,
-      message: 'Фон успешно загружен и синхронизирован' 
+      backgroundUrl
     });
     
   } catch (error) {
@@ -70,7 +68,6 @@ app.get('/state', (req, res) => {
   res.json(canvasState);
 });
 
-// Socket.io обработчики
 io.on('connection', (socket) => {
   console.log('Новый пользователь подключен:', socket.id);
   
@@ -82,54 +79,41 @@ io.on('connection', (socket) => {
   socket.emit('initialState', canvasState);
   io.emit('usersUpdate', canvasState.users);
   
-  // Обработка начала рисования линии
-  socket.on('startLine', (lineId) => {
-    canvasState.drawings.push({
-      id: lineId,
-      userId: socket.id,
-      tool: 'brush',
-      points: [],
-      color: '#000000',
-      width: 3,
-      timestamp: new Date()
-    });
-  });
-  
-  // Обработка добавления точек в линию
-  socket.on('addPoints', (data) => {
-    const drawing = canvasState.drawings.find(d => d.id === data.lineId);
-    if (drawing) {
-      drawing.points.push(...data.points);
-      drawing.color = data.color;
-      drawing.width = data.width;
-      drawing.tool = data.tool;
-      
-      // Рассылаем обновление всем остальным
-      socket.broadcast.emit('drawingUpdate', {
-        lineId: data.lineId,
-        points: data.points,
-        color: data.color,
-        width: data.width,
-        tool: data.tool
+  socket.on('drawing', (drawingData) => {
+    // Добавляем ID для каждой линии
+    if (!drawingData.id) {
+      drawingData.id = `${socket.id}-${Date.now()}`;
+    }
+    
+    const existingIndex = canvasState.drawings.findIndex(d => d.id === drawingData.id);
+    
+    if (existingIndex >= 0) {
+      // Обновляем существующую линию
+      canvasState.drawings[existingIndex] = {
+        ...canvasState.drawings[existingIndex],
+        ...drawingData
+      };
+    } else {
+      // Добавляем новую линию
+      canvasState.drawings.push({
+        id: drawingData.id,
+        userId: socket.id,
+        tool: drawingData.tool,
+        points: drawingData.points,
+        color: drawingData.color,
+        width: drawingData.width,
+        timestamp: new Date()
       });
     }
+    
+    socket.broadcast.emit('drawing', drawingData);
   });
   
-  // Обработка завершения линии
-  socket.on('endLine', (lineId) => {
-    const drawing = canvasState.drawings.find(d => d.id === lineId);
-    if (drawing) {
-      drawing.completed = true;
-    }
-  });
-  
-  // Обработка удаления линии
   socket.on('deleteLine', (lineId) => {
     canvasState.drawings = canvasState.drawings.filter(d => d.id !== lineId);
     io.emit('lineDeleted', lineId);
   });
   
-  // Обработка очистки холста
   socket.on('clearCanvas', () => {
     canvasState.drawings = [];
     io.emit('canvasCleared');
