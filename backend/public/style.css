@@ -1,264 +1,30 @@
 /* --- Base / reset --- */
-* { 
-    box-sizing: border-box; 
-    margin: 0;
-    padding: 0;
-}
-
-html, body { 
-    height: 100%; 
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-    background: #f6f7f9; 
-    color: #111; 
-    overflow: hidden;
-}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; font-family: Arial, Helvetica, sans-serif; background: #f6f7f9; color:#111; }
+a { color: inherit; text-decoration: none; }
 
 /* --- Layout --- */
-.app {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    position: relative;
+.app { display: flex; flex-direction: column; height: 100vh; }
+.topbar { display:flex; justify-content:space-between; align-items:center; padding:10px 16px; background:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.08); border-radius:8px; margin:8px; }
+.tools { width:260px; background:#fff; padding:12px; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.04); display:flex; flex-direction:column; gap:10px; margin:8px; }
+.canvas-wrap { flex:1; display:flex; justify-content:center; align-items:center; margin:8px; }
+
+.canvas-square { width:100%; max-width:1100px; aspect-ratio:1/1; position:relative; background:#fff; border-radius:8px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,0.06); }
+.canvas-square canvas { position:absolute; top:0; left:0; width:100%; height:100%; display:block; touch-action:none; -webkit-user-select:none; user-select:none; }
+
+/* loading overlay */
+.loading { position:absolute; left:12px; top:12px; z-index:60; background:rgba(255,255,255,0.9); padding:6px 10px; border-radius:6px; font-size:13px; }
+
+/* modal */
+.modal { display:none; position:fixed; inset:0; background: rgba(0,0,0,0.45); align-items:center; justify-content:center; }
+.modal .modal-content { background:#fff; padding:14px; border-radius:8px; width:90%; max-width:420px; }
+
+/* responsive */
+@media (max-width:900px){
+  .tools { display:none; }
+  .canvas-wrap { margin:0; }
+  .canvas-square { width: calc(100vw - 12px); height: calc(100vw - 12px); max-width:none; }
 }
 
-/* Topbar */
-.topbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    background: #fff;
-    padding: 12px 16px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-    z-index: 100;
-}
-
-.logo {
-    font-weight: bold;
-    font-size: 18px;
-}
-
-.online {
-    font-size: 14px;
-    color: #666;
-}
-
-/* Tools sidebar */
-.tools {
-    position: fixed;
-    left: 0;
-    top: 60px;
-    bottom: 0;
-    width: 80px;
-    background: #fff;
-    padding: 16px 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    box-shadow: 2px 0 8px rgba(0,0,0,0.1);
-    z-index: 90;
-}
-
-.tool {
-    width: 48px;
-    height: 48px;
-    border: 2px solid transparent;
-    border-radius: 8px;
-    background: #f8f9fa;
-    font-size: 18px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.tool.active {
-    border-color: #007bff;
-    background: #e3f2fd;
-}
-
-.tool:hover {
-    background: #e9ecef;
-}
-
-#colorPicker {
-    width: 48px;
-    height: 48px;
-    border: none;
-    border-radius: 8px;
-    cursor: pointer;
-    padding: 0;
-}
-
-.size-display {
-    font-size: 12px;
-    color: #666;
-    text-align: center;
-}
-
-#brushSize {
-    width: 100%;
-}
-
-.danger {
-    background: #dc3545;
-    color: white;
-    border: none;
-    padding: 8px;
-    border-radius: 6px;
-    cursor: pointer;
-}
-
-/* Mobile controls */
-.mobile-controls {
-    display: none;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: #fff;
-    padding: 12px;
-    box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
-    z-index: 95;
-    gap: 8px;
-    align-items: center;
-}
-
-.mobile-controls select,
-.mobile-controls input {
-    flex: 1;
-    height: 40px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    padding: 0 8px;
-}
-
-/* Canvas area */
-.canvas-container {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 80px 100px 20px 100px;
-    background: #e9eef3;
-}
-
-.canvas-square {
-    width: 100%;
-    max-width: min(80vh, 80vw);
-    aspect-ratio: 1 / 1;
-    background: #fff;
-    border-radius: 8px;
-    position: relative;
-    overflow: hidden;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.1);
-}
-
-.canvas-square canvas {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    touch-action: none;
-}
-
-/* Loading */
-.loading {
-    position: absolute;
-    z-index: 60;
-    left: 12px;
-    top: 12px;
-    background: rgba(255,255,255,0.9);
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 14px;
-    color: #222;
-    backdrop-filter: blur(4px);
-}
-
-/* Modal */
-.modal {
-    display: none;
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
-    background: rgba(0,0,0,0.5);
-    z-index: 1000;
-    align-items: center;
-    justify-content: center;
-}
-
-.modal-content {
-    background: #fff;
-    padding: 24px;
-    border-radius: 12px;
-    width: 90%;
-    max-width: 400px;
-    position: relative;
-}
-
-.close {
-    position: absolute;
-    right: 16px;
-    top: 16px;
-    font-size: 24px;
-    cursor: pointer;
-    color: #666;
-}
-
-.modal h2 {
-    margin-bottom: 16px;
-}
-
-.modal input {
-    width: 100%;
-    margin: 8px 0;
-    padding: 8px;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-}
-
-.modal button {
-    width: 100%;
-    padding: 10px;
-    background: #007bff;
-    color: white;
-    border: none;
-    border-radius: 6px;
-    cursor: pointer;
-    margin-top: 8px;
-}
-
-/* Responsive */
-@media (max-width: 768px) {
-    .tools {
-        display: none;
-    }
-    
-    .mobile-controls {
-        display: flex;
-    }
-    
-    .canvas-container {
-        padding: 60px 20px 80px 20px;
-    }
-    
-    .canvas-square {
-        max-width: 100%;
-    }
-}
-
-@media (max-width: 480px) {
-    .topbar {
-        padding: 8px 12px;
-    }
-    
-    .canvas-container {
-        padding: 50px 10px 70px 10px;
-    }
-    
-    .mobile-controls {
-        padding: 8px;
-    }
-}
+/* buttons/inputs */
+button, input[type="color"], input[type="range"] { min-height:40px; border-radius:8px; border:1px solid rgba(0,0,0,0.06); padding:6px 8px; background:#fff; }

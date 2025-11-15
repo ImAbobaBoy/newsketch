@@ -1,472 +1,231 @@
+(() => {
+const SEND_INTERVAL_MS = 80;
+const MAX_POINTS_PER_BATCH = 80;
+const MIN_CANVAS = 800;
+
 class SketchApp {
-    constructor() {
-        this.canvases = {
-            background: document.getElementById('backgroundCanvas'),
-            drawings: document.getElementById('drawingsCanvas'),
-            overlay: document.getElementById('overlayCanvas')
-        };
-        
-        this.ctx = {
-            bg: this.canvases.background.getContext('2d'),
-            draw: this.canvases.drawings.getContext('2d'),
-            overlay: this.canvases.overlay.getContext('2d')
-        };
+  constructor() {
+    this.backgroundCanvas = document.getElementById('backgroundCanvas');
+    this.drawingsCanvas = document.getElementById('drawingsCanvas');
+    this.overlayCanvas = document.getElementById('overlayCanvas');
+    this.canvasWrap = document.getElementById('canvasWrap');
+    this.loadingEl = document.getElementById('loading');
 
-        this.socket = io();
-        this.initProperties();
-        this.bindEvents();
-        this.setupSocket();
-        this.adjustCanvases();
-        
-        window.addEventListener('resize', this.debounce(() => this.adjustCanvases(), 250));
-    }
+    this.toolSelect = document.querySelector('.tool[data-tool="brush"]');
+    this.colorPicker = document.getElementById('colorPicker');
+    this.brushSizeInput = document.getElementById('brushSize');
 
-    initProperties() {
-        this.currentTool = 'brush';
-        this.currentColor = '#ff6b6b';
-        this.brushSize = 3;
-        this.isDrawing = false;
-        this.currentLineId = null;
-        this.startPos = null;
-        this.dpr = window.devicePixelRatio || 1;
-        
-        this.backgroundImage = null;
-        this.drawings = new Map();
-        this.pointsBuffer = new Map();
-        
-        // Оптимизация: буферизация отправки
-        this.sendInterval = 50; // ms
-        this.lastSendTime = 0;
-    }
+    this.bgModal = document.getElementById('backgroundModal');
+    this.bgInput = document.getElementById('backgroundInput');
+    this.bgUrl = document.getElementById('backgroundUrl');
+    this.loadBgBtn = document.getElementById('loadBackgroundBtn');
+    this.modalClose = document.getElementById('modalClose');
 
-    bindEvents() {
-        // Инструменты
-        document.querySelectorAll('.tool').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                document.querySelectorAll('.tool').forEach(t => t.classList.remove('active'));
-                e.target.classList.add('active');
-                this.setTool(e.target.dataset.tool);
-            });
-        });
+    this.socket = io();
 
-        // Цвет и размер
-        document.getElementById('colorPicker').addEventListener('change', (e) => {
-            this.setColor(e.target.value);
-            document.getElementById('colorPickerMobile').value = e.target.value;
-        });
+    this.bgCtx = this.backgroundCanvas.getContext('2d');
+    this.drawCtx = this.drawingsCanvas.getContext('2d');
+    this.ovCtx = this.overlayCanvas.getContext('2d');
 
-        document.getElementById('colorPickerMobile').addEventListener('change', (e) => {
-            this.setColor(e.target.value);
-            document.getElementById('colorPicker').value = e.target.value;
-        });
+    this.dpr = window.devicePixelRatio || 1;
+    this.currentTool = 'brush';
+    this.currentColor = '#ff6b6b';
+    this.brushSize = 3;
 
-        document.getElementById('brushSize').addEventListener('input', (e) => {
-            this.setBrushSize(+e.target.value);
-            document.getElementById('brushSizeMobile').value = e.target.value;
-        });
+    this.isDrawing = false;
+    this.currentLineId = null;
+    this.backgroundImage = null;
+    this.drawings = new Map();
+    this.pointsBuffer = {};
 
-        document.getElementById('brushSizeMobile').addEventListener('input', (e) => {
-            this.setBrushSize(+e.target.value);
-            document.getElementById('brushSize').value = e.target.value;
-        });
+    this.bindUI();
+    this.setupSocket();
+    this.adjustCanvases();
+    window.addEventListener('resize', this.debounce(() => this.adjustCanvases(), 100));
+    this.startSender();
+  }
 
-        // Мобильные инструменты
-        document.getElementById('toolSelectMobile').addEventListener('change', (e) => {
-            this.setTool(e.target.value);
-        });
+  bindUI(){
+    document.querySelectorAll('.tool').forEach(btn => {
+      btn.addEventListener('click', () => this.currentTool = btn.dataset.tool);
+    });
+    this.colorPicker.addEventListener('change', e => this.currentColor = e.target.value);
+    this.brushSizeInput.addEventListener('input', e => this.brushSize = +e.target.value);
 
-        // Кнопки действий
-        document.getElementById('clearBtn').addEventListener('click', () => this.clearCanvas());
-        document.getElementById('backgroundBtn').addEventListener('click', () => this.openModal());
-        
-        // Модальное окно
-        document.getElementById('modalClose').addEventListener('click', () => this.closeModal());
-        document.getElementById('loadBackgroundBtn').addEventListener('click', () => this.uploadBackground());
-
-        // События холста
-        this.setupCanvasEvents();
-    }
-
-    setupCanvasEvents() {
-        const overlay = this.canvases.overlay;
-        
-        overlay.addEventListener('pointerdown', (e) => {
-            if (e.pointerType === 'mouse' && e.button !== 0) return;
-            
-            const pos = this.getCanvasPos(e);
-            this.startDrawing(pos);
-            e.preventDefault();
-        });
-
-        overlay.addEventListener('pointermove', (e) => {
-            const pos = this.getCanvasPos(e);
-            this.continueDrawing(pos);
-            e.preventDefault();
-        });
-
-        overlay.addEventListener('pointerup', (e) => {
-            this.finishDrawing();
-            e.preventDefault();
-        });
-
-        overlay.addEventListener('pointercancel', () => {
-            this.finishDrawing();
-        });
-
-        // Предотвращаем контекстное меню
-        overlay.addEventListener('contextmenu', (e) => e.preventDefault());
-    }
-
-    startDrawing(pos) {
-        this.isDrawing = true;
-        this.startPos = pos;
-        this.currentLineId = this.generateId();
-
-        const line = {
-            id: this.currentLineId,
-            tool: this.currentTool,
-            points: [pos],
-            color: this.currentColor,
-            width: this.brushSize
-        };
-
-        this.drawings.set(line.id, line);
-        this.pointsBuffer.set(line.id, [pos]);
-
-        // Отправляем метаданные линии
-        this.socket.emit('newLine', {
-            id: line.id,
-            tool: line.tool,
-            color: line.color,
-            width: line.width
-        });
-
-        // Рисуем начальную точку для кисти
-        if (line.tool === 'brush') {
-            this.drawDot(pos.x, pos.y, line.color, line.width);
-        }
-    }
-
-    continueDrawing(pos) {
-        if (!this.isDrawing) return;
-
-        const line = this.drawings.get(this.currentLineId);
-        if (!line) return;
-
-        line.points.push(pos);
-        
-        // Буферизуем точки для отправки
-        const buffer = this.pointsBuffer.get(this.currentLineId) || [];
-        buffer.push(pos);
-        this.pointsBuffer.set(this.currentLineId, buffer);
-
-        // Отрисовка в реальном времени
-        this.drawSegmentImmediate(line);
-        
-        // Отправка точек с троттлингом
-        this.sendBufferedPoints();
-    }
-
-    finishDrawing() {
-        if (!this.isDrawing) return;
-        
-        // Отправляем оставшиеся точки
-        this.sendBufferedPoints(true);
-        
-        this.socket.emit('endLine', { id: this.currentLineId });
-        this.isDrawing = false;
-        this.currentLineId = null;
-        this.startPos = null;
-        
-        // Очищаем оверлей
-        this.ctx.overlay.clearRect(0, 0, 
-            this.canvases.overlay.width, 
-            this.canvases.overlay.height
-        );
-    }
-
-    sendBufferedPoints(force = false) {
-        const now = Date.now();
-        if (!force && now - this.lastSendTime < this.sendInterval) return;
-
-        for (const [id, points] of this.pointsBuffer) {
-            if (points.length > 0) {
-                const pointsToSend = [...points];
-                this.pointsBuffer.set(id, []);
-                
-                this.socket.emit('pointsBatch', { 
-                    id, 
-                    points: pointsToSend 
-                });
-            }
-        }
-        
-        this.lastSendTime = now;
-    }
-
-    drawSegmentImmediate(line) {
-        const points = line.points;
-        if (points.length < 2) return;
-
-        const ctx = line.tool === 'eraser' ? this.ctx.draw : this.ctx.overlay;
-        const a = points[points.length - 2];
-        const b = points[points.length - 1];
-
-        ctx.strokeStyle = line.tool === 'eraser' ? '#ffffff' : line.color;
-        ctx.lineWidth = line.width;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.stroke();
-    }
-
-    drawDot(x, y, color, size) {
-        this.ctx.draw.beginPath();
-        this.ctx.draw.arc(x, y, size / 2, 0, Math.PI * 2);
-        this.ctx.draw.fillStyle = color;
-        this.ctx.draw.fill();
-    }
-
-    // Остальные методы (setTool, setColor, setBrushSize, getCanvasPos, adjustCanvases и т.д.)
-    // остаются аналогичными, но с оптимизациями
-
-    setupSocket() {
-        this.socket.on('connect', () => {
-            console.log('Connected to server');
-            document.getElementById('loading').style.display = 'none';
-        });
-
-        this.socket.on('usersUpdate', (users) => {
-            document.getElementById('usersCount').textContent = users.length;
-        });
-
-        this.socket.on('initialState', (state) => this.loadState(state));
-        this.socket.on('newLine', (line) => this.handleNewLine(line));
-        this.socket.on('pointsBatch', (data) => this.handlePointsBatch(data));
-        this.socket.on('lineDeleted', (id) => this.handleLineDeleted(id));
-        this.socket.on('canvasCleared', () => this.handleCanvasCleared());
-        this.socket.on('backgroundChanged', (data) => this.handleBackgroundChanged(data));
-
-        this.socket.on('disconnect', () => {
-            document.getElementById('loading').style.display = 'block';
-        });
-    }
-
-    loadState(state) {
-        if (state.backgroundImage) {
-            this.setBackground(state.backgroundImage);
-        }
-
+    document.getElementById('backgroundBtn').addEventListener('click', () => this.openModal());
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if(confirm('Очистить холст?')){
+        this.socket.emit('clearCanvas');
         this.drawings.clear();
-        (state.drawings || []).forEach(drawing => {
-            this.drawings.set(drawing.id, drawing);
-        });
-        
-        this.redrawAll();
-        document.getElementById('loading').style.display = 'none';
+        this.clearCanvas(this.drawingsCanvas);
+      }
+    });
+    this.modalClose.addEventListener('click', ()=>this.closeModal());
+    this.loadBgBtn.addEventListener('click', ()=>this.uploadBackground());
+
+    const overlay = this.overlayCanvas;
+    overlay.addEventListener("pointerdown", e => { overlay.setPointerCapture(e.pointerId); this.onPointerDown(this.getCanvasPos(e)); });
+    overlay.addEventListener("pointermove", e => this.onPointerMove(this.getCanvasPos(e)));
+    overlay.addEventListener("pointerup", e => { overlay.releasePointerCapture(e.pointerId); this.onPointerUp(); });
+    overlay.addEventListener("pointercancel", () => this.onPointerUp());
+  }
+
+  setupSocket(){
+    this.socket.on('connect', () => console.log("socket connected"));
+    this.socket.on('initialState', s => this.loadState(s));
+    this.socket.on('usersUpdate', users => document.getElementById('usersCount').textContent = users.length);
+    this.socket.on('newLine', line => { if(!this.drawings.has(line.id)) this.drawings.set(line.id, {...line, points:[]}); });
+    this.socket.on('pointsBatch', ({id, points}) => {
+      const line = this.drawings.get(id);
+      if(!line) return;
+      const start = line.points.length;
+      line.points.push(...points);
+      this.drawSegmentBatch(line, start, line.points.length);
+    });
+    this.socket.on('lineDeleted', id => { this.drawings.delete(id); this.redrawAll(); });
+    this.socket.on('canvasCleared', () => { this.drawings.clear(); this.clearCanvas(this.drawingsCanvas); });
+    this.socket.on('backgroundChanged', ({backgroundUrl}) => this.setBackground(backgroundUrl));
+  }
+
+  loadState(state){
+    if(state.backgroundImage) this.setBackground(state.backgroundImage);
+    this.drawings.clear();
+    (state.drawings||[]).forEach(d=>this.drawings.set(d.id,d));
+    this.redrawAll();
+    this.loadingEl.style.display="none";
+  }
+
+  setBackground(url){
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => { this.backgroundImage = img; this.drawBackground(); };
+    img.src = url;
+  }
+
+  drawBackground(){
+    const c = this.backgroundCanvas, ctx = this.bgCtx;
+    ctx.clearRect(0,0,c.width,c.height);
+    if(!this.backgroundImage) return;
+    ctx.drawImage(this.backgroundImage, 0,0,this.backgroundImage.width,this.backgroundImage.height,0,0,c.width/this.dpr,c.height/this.dpr);
+  }
+
+  getCanvasPos(e){
+    const rect = this.overlayCanvas.getBoundingClientRect();
+    return { x:(e.clientX-rect.left)*(this.overlayCanvas.width/rect.width), y:(e.clientY-rect.top)*(this.overlayCanvas.height/rect.height) };
+  }
+
+  adjustCanvases(){
+    const rect = this.canvasWrap.getBoundingClientRect();
+    let size = window.innerWidth < 820 ? Math.min(window.innerWidth, window.innerHeight) : Math.min(Math.max(rect.width, MIN_CANVAS), Math.max(rect.height, MIN_CANVAS));
+    this.dpr = window.devicePixelRatio || 1;
+    [this.backgroundCanvas, this.drawingsCanvas, this.overlayCanvas].forEach(c => {
+      c.style.width = c.style.height = size+"px";
+      c.width = c.height = Math.floor(size*this.dpr);
+      const ctx=c.getContext("2d"); ctx.setTransform(this.dpr,0,0,this.dpr,0,0); ctx.lineCap=ctx.lineJoin="round";
+    });
+    if(this.backgroundImage) this.drawBackground();
+    this.redrawAll();
+  }
+
+  onPointerDown(pos){
+    this.isDrawing = true;
+    this.currentLineId = this.makeId();
+    const line = { id:this.currentLineId, tool:this.currentTool, points:[pos], color:this.currentColor, width:this.brushSize };
+    this.drawings.set(line.id,line);
+    this.pointsBuffer[line.id] = [pos];
+    this.socket.emit('newLine',{id:line.id,tool:line.tool,color:line.color,width:line.width});
+    if(line.tool==="brush") this.drawDot(pos.x,pos.y,line.color,line.width);
+  }
+
+  onPointerMove(pos){
+    if(!this.isDrawing) return;
+    const line = this.drawings.get(this.currentLineId);
+    if(!line) return;
+    const last=line.points[line.points.length-1];
+    if(Math.abs(last.x-pos.x)<1 && Math.abs(last.y-pos.y)<1) return;
+    const p={x:Math.round(pos.x),y:Math.round(pos.y)};
+    line.points.push(p);
+    this.pointsBuffer[line.id].push(p);
+    this.drawSegmentImmediate(line);
+  }
+
+  onPointerUp(){
+    if(!this.isDrawing) return;
+    this.isDrawing=false;
+    this.socket.emit('endLine',{id:this.currentLineId});
+    this.currentLineId=null;
+  }
+
+  drawDot(x,y,color,size){
+    const ctx=this.drawCtx;
+    ctx.beginPath(); ctx.arc(x,y,size/2,0,Math.PI*2); ctx.fillStyle=color; ctx.fill();
+  }
+
+  drawSegmentImmediate(line){
+    const pts=line.points; if(pts.length<2) return;
+    const n=Math.min(pts.length,32), startIndex=pts.length-n;
+    const ctx=this.drawCtx; ctx.beginPath();
+    ctx.moveTo(pts[startIndex].x,pts[startIndex].y);
+    for(let i=startIndex+1;i<pts.length;i++) ctx.lineTo(pts[i].x,pts[i].y);
+    ctx.lineWidth=line.width; ctx.strokeStyle=line.color; ctx.stroke();
+  }
+
+  drawSegmentBatch(line,start,end){
+    const pts=line.points; if(pts.length<2) return;
+    const ctx=this.drawCtx; ctx.beginPath();
+    ctx.moveTo(pts[Math.max(0,start)].x, pts[Math.max(0,start)].y);
+    for(let i=Math.max(0,start)+1;i<end;i++){ const p=pts[i]; if(!p) continue; ctx.lineTo(p.x,p.y); }
+    ctx.lineWidth=line.width; ctx.strokeStyle=line.color; ctx.stroke();
+  }
+
+  drawWholeLine(line){
+    if(!line.points.length) return;
+    const ctx=this.drawCtx; ctx.beginPath();
+    ctx.moveTo(line.points[0].x,line.points[0].y);
+    for(let i=1;i<line.points.length;i++) ctx.lineTo(line.points[i].x,line.points[i].y);
+    ctx.lineWidth=line.width; ctx.strokeStyle=line.color; ctx.stroke();
+  }
+
+  redrawAll(){ this.clearCanvas(this.drawingsCanvas); for(const l of this.drawings.values()) this.drawWholeLine(l); }
+  clearCanvas(c){ c.getContext("2d").clearRect(0,0,c.width,c.height); }
+
+  openModal(){ this.bgModal.style.display="flex"; }
+  closeModal(){ this.bgModal.style.display="none"; }
+
+  uploadBackground(){
+    const file=this.bgInput.files?.[0]; if(file){
+      const r=new FileReader();
+      r.onload=ev=>{
+        fetch("/upload-background",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({imageData:ev.target.result,fileName:file.name})});
+        this.closeModal();
+      }; r.readAsDataURL(file); return;
     }
+    const url=this.bgUrl.value.trim(); if(!url) return alert("Введите URL");
+    const img=new Image(); img.crossOrigin="anonymous";
+    img.onload=()=>{
+      const tmp=document.createElement("canvas"); tmp.width=img.width; tmp.height=img.height;
+      tmp.getContext("2d").drawImage(img,0,0); const data=tmp.toDataURL("image/png");
+      fetch("/upload-background",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({imageData:data,fileName:"bg-url.png"})});
+      this.closeModal();
+    };
+    img.onerror=()=>alert("Ошибка загрузки URL"); img.src=url;
+  }
 
-    handleNewLine(line) {
-        if (!this.drawings.has(line.id)) {
-            this.drawings.set(line.id, { ...line, points: [] });
-        }
-    }
+  startSender(){
+    setInterval(()=>{
+      for(const id in this.pointsBuffer){
+        const buf=this.pointsBuffer[id];
+        if(!buf.length){ delete this.pointsBuffer[id]; continue; }
+        const pack=buf.splice(0,MAX_POINTS_PER_BATCH);
+        this.socket.emit("pointsBatch",{id,points:pack});
+        if(!buf.length) delete this.pointsBuffer[id];
+      }
+    },SEND_INTERVAL_MS);
+  }
 
-    handlePointsBatch({ id, points }) {
-        const line = this.drawings.get(id);
-        if (line) {
-            const startIndex = line.points.length;
-            line.points.push(...points);
-            this.drawSegmentBatch(line, startIndex);
-        }
-    }
-
-    drawSegmentBatch(line, startIndex) {
-        const ctx = this.ctx.draw;
-        ctx.strokeStyle = line.color;
-        ctx.lineWidth = line.width;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        ctx.beginPath();
-        ctx.moveTo(line.points[0].x, line.points[0].y);
-        
-        for (let i = 1; i < line.points.length; i++) {
-            ctx.lineTo(line.points[i].x, line.points[i].y);
-        }
-        
-        ctx.stroke();
-    }
-
-    handleLineDeleted(id) {
-        this.drawings.delete(id);
-        this.redrawAll();
-    }
-
-    handleCanvasCleared() {
-        this.drawings.clear();
-        this.ctx.draw.clearRect(0, 0, 
-            this.canvases.drawings.width, 
-            this.canvases.drawings.height
-        );
-    }
-
-    handleBackgroundChanged({ backgroundUrl }) {
-        this.setBackground(backgroundUrl);
-    }
-
-    redrawAll() {
-        this.ctx.draw.clearRect(0, 0, 
-            this.canvases.drawings.width, 
-            this.canvases.drawings.height
-        );
-        
-        for (const line of this.drawings.values()) {
-            this.drawWholeLine(line);
-        }
-    }
-
-    drawWholeLine(line) {
-        if (line.points.length < 2) return;
-
-        const ctx = this.ctx.draw;
-        ctx.strokeStyle = line.color;
-        ctx.lineWidth = line.width;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        ctx.beginPath();
-        ctx.moveTo(line.points[0].x, line.points[0].y);
-        
-        for (let i = 1; i < line.points.length; i++) {
-            ctx.lineTo(line.points[i].x, line.points[i].y);
-        }
-        
-        ctx.stroke();
-    }
-
-    clearCanvas() {
-        if (confirm('Очистить холст?')) {
-            this.socket.emit('clearCanvas');
-        }
-    }
-
-    setBackground(url) {
-        const img = new Image();
-        img.crossOrigin = 'anonymous';
-        
-        img.onload = () => {
-            this.backgroundImage = img;
-            this.drawBackground();
-        };
-        
-        img.onerror = () => {
-            console.error('Failed to load background image');
-        };
-        
-        img.src = url;
-    }
-
-    drawBackground() {
-        const canvas = this.canvases.background;
-        const ctx = this.ctx.bg;
-        
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
-        if (this.backgroundImage) {
-            const scale = Math.min(
-                canvas.width / this.backgroundImage.width,
-                canvas.height / this.backgroundImage.height
-            );
-            
-            const width = this.backgroundImage.width * scale;
-            const height = this.backgroundImage.height * scale;
-            const x = (canvas.width - width) / 2;
-            const y = (canvas.height - height) / 2;
-            
-            ctx.drawImage(this.backgroundImage, x, y, width, height);
-        }
-    }
-
-    adjustCanvases() {
-        const container = document.querySelector('.canvas-square');
-        const rect = container.getBoundingClientRect();
-        const size = Math.min(rect.width, rect.height);
-        this.dpr = window.devicePixelRatio || 1;
-
-        Object.values(this.canvases).forEach(canvas => {
-            canvas.style.width = size + 'px';
-            canvas.style.height = size + 'px';
-            canvas.width = Math.floor(size * this.dpr);
-            canvas.height = Math.floor(size * this.dpr);
-            
-            const ctx = canvas.getContext('2d');
-            ctx.scale(this.dpr, this.dpr);
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-        });
-
-        // Перерисовываем содержимое
-        this.drawBackground();
-        this.redrawAll();
-    }
-
-    generateId() {
-        return `${this.socket.id}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    }
-
-    debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    }
-
-    openModal() {
-        document.getElementById('backgroundModal').style.display = 'flex';
-    }
-
-    closeModal() {
-        document.getElementById('backgroundModal').style.display = 'none';
-    }
-
-    uploadBackground() {
-        const fileInput = document.getElementById('backgroundInput');
-        const urlInput = document.getElementById('backgroundUrl');
-        
-        if (fileInput.files && fileInput.files[0]) {
-            const file = fileInput.files[0];
-            const reader = new FileReader();
-            
-            reader.onload = (e) => {
-                this.socket.emit('uploadBackground', {
-                    imageData: e.target.result,
-                    fileName: file.name
-                });
-                this.closeModal();
-            };
-            
-            reader.readAsDataURL(file);
-        } else if (urlInput.value.trim()) {
-            this.socket.emit('uploadBackground', {
-                imageUrl: urlInput.value.trim()
-            });
-            this.closeModal();
-        } else {
-            alert('Выберите файл или введите URL');
-        }
-    }
+  makeId(){ return `${this.socket.id}-${Date.now()}-${Math.random().toString(36).slice(2,8)}`; }
+  debounce(f,t=100){ let id; return (...a)=>{ clearTimeout(id); id=setTimeout(()=>f(...a),t); }; }
 }
 
-// Инициализация при загрузке DOM
-document.addEventListener('DOMContentLoaded', () => {
-    window.sketchApp = new SketchApp();
-});
+document.addEventListener("DOMContentLoaded",()=>{ window.app=new SketchApp(); });
+})();
